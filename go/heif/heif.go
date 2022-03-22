@@ -594,6 +594,15 @@ func (h *ImageHandle) GetThumbnail(thumbnail_id int) (*ImageHandle, error) {
 }
 
 // TODO: EXIF metadata
+func (h *ImageHandle) GetICCProfle() ([]byte, error) {
+	size := C.heif_image_handle_get_raw_color_profile_size(h.handle)
+	if size > 0 {
+		data := make([]byte, size)
+		err := C.heif_image_handle_get_raw_color_profile(h.handle, unsafe.Pointer(&data[0]))
+		return data, convertHeifError(err)
+	}
+	return nil, nil
+}
 
 // --- Image
 
