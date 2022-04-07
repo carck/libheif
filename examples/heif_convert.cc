@@ -28,6 +28,7 @@
 #endif
 
 #include <cstring>
+#include <getopt.h>
 
 #if defined(HAVE_UNISTD_H)
 
@@ -66,11 +67,23 @@
 
 #define UNUSED(x) (void)x
 
-static int usage(const char* command)
+static void show_help(const char* argv0)
 {
-  fprintf(stderr, "USAGE: %s [-q quality 0..100] <filename> <output>\n", command);
-  return 1;
+  std::cerr << " heif-convert  libheif version: " << heif_get_version() << "\n"
+            << "-------------------------------------------\n"
+               "Usage: heif-convert [options]  <input-image> <output-image>\n"
+               "\n"
+               "The program determines the output file format from the output filename suffix.\n"
+               "These suffices are recognized: jpg, jpeg, png, y4m."
+               "\n"
+               "Options:\n"
+               "  -h, --help      show help\n"
+               "  -q, --quality   quality (for JPEG output)\n"
+               "      --with-aux  also write auxiliary images (e.g. depth images)\n"
+               "      --no-colons replace ':' characters in auxiliary image filenames with '_'\n"
+               "      --quiet     do not output status messages to console\n";
 }
+
 
 class ContextReleaser
 {
@@ -87,29 +100,54 @@ private:
   struct heif_context* ctx_;
 };
 
+
+int option_quiet = 0;
+int option_aux = 0;
+int option_no_colons = 0;
+
+static struct option long_options[] = {
+    {(char* const) "quality",   required_argument, 0,                 'q'},
+    {(char* const) "strict",    no_argument,       0,                 's'},
+    {(char* const) "quiet",     no_argument,       &option_quiet,     1},
+    {(char* const) "with-aux",  no_argument,       &option_aux,       1},
+    {(char* const) "no-colons", no_argument,       &option_no_colons, 1},
+    {(char* const) "help",      no_argument,       0,                 'h'}
+};
+
 int main(int argc, char** argv)
 {
-  int opt;
   int quality = -1;  // Use default quality.
   bool strict_decoding = false;
 
   UNUSED(quality);  // The quality will only be used by encoders that support it.
-  while ((opt = getopt(argc, argv, "q:s")) != -1) {
-    switch (opt) {
+  //while ((opt = getopt(argc, argv, "q:s")) != -1) {
+  while (true) {
+    int option_index = 0;
+    int c = getopt_long(argc, argv, "q:s", long_options, &option_index);
+    if (c == -1) {
+      break;
+    }
+
+    switch (c) {
       case 'q':
         quality = atoi(optarg);
         break;
       case 's':
         strict_decoding = true;
         break;
-      default: /* '?' */
-        return usage(argv[0]);
+      case '?':
+        std::cerr << "\n";
+        // falltrough
+      case 'h':
+        show_help(argv[0]);
+        return 0;
     }
   }
 
   if (optind + 2 > argc) {
     // Need input and output filenames as additional arguments.
-    return usage(argv[0]);
+    show_help(argv[0]);
+    return 5;
   }
 
   std::string input_filename(argv[optind++]);
@@ -201,7 +239,9 @@ int main(int argc, char** argv)
     return 1;
   }
 
-  printf("File contains %d images\n", num_images);
+  if (!option_quiet) {
+    std::cout << "File contains " << num_images << " image" << (num_images>1 ? "s" : "") << "\n";
+  }
 
   std::vector<heif_item_id> image_IDs(num_images);
   num_images = heif_context_get_list_of_top_level_image_IDs(ctx, image_IDs.data(), num_images);
@@ -276,125 +316,140 @@ int main(int argc, char** argv)
         fprintf(stderr, "could not write image\n");
       }
       else {
-        printf("Written to %s\n", filename.c_str());
+        if (!option_quiet) {
+          std::cout << "Written to " << filename << "\n";
+        }
       }
       heif_image_release(image);
 
 
-      int has_depth = heif_image_handle_has_depth_image(handle);
-      if (has_depth) {
-        heif_item_id depth_id;
-        int nDepthImages = heif_image_handle_get_list_of_depth_image_IDs(handle, &depth_id, 1);
-        assert(nDepthImages == 1);
-        (void) nDepthImages;
+      if (option_aux) {
+        int has_depth = heif_image_handle_has_depth_image(handle);
+        if (has_depth) {
+          heif_item_id depth_id;
+          int nDepthImages = heif_image_handle_get_list_of_depth_image_IDs(handle, &depth_id, 1);
+          assert(nDepthImages == 1);
+          (void) nDepthImages;
 
-        struct heif_image_handle* depth_handle;
-        err = heif_image_handle_get_depth_image_handle(handle, depth_id, &depth_handle);
-        if (err.code) {
-          heif_image_handle_release(handle);
-          std::cerr << "Could not read depth channel\n";
-          return 1;
-        }
+          struct heif_image_handle* depth_handle;
+          err = heif_image_handle_get_depth_image_handle(handle, depth_id, &depth_handle);
+          if (err.code) {
+            heif_image_handle_release(handle);
+            std::cerr << "Could not read depth channel\n";
+            return 1;
+          }
 
-        int depth_bit_depth = heif_image_handle_get_luma_bits_per_pixel(depth_handle);
+          int depth_bit_depth = heif_image_handle_get_luma_bits_per_pixel(depth_handle);
 
-        struct heif_image* depth_image;
-        err = heif_decode_image(depth_handle,
-                                &depth_image,
-                                encoder->colorspace(false),
-                                encoder->chroma(false, depth_bit_depth),
-                                nullptr);
-        if (err.code) {
+          struct heif_image* depth_image;
+          err = heif_decode_image(depth_handle,
+                                  &depth_image,
+                                  encoder->colorspace(false),
+                                  encoder->chroma(false, depth_bit_depth),
+                                  nullptr);
+          if (err.code) {
+            heif_image_handle_release(depth_handle);
+            heif_image_handle_release(handle);
+            std::cerr << "Could not decode depth image: " << err.message << "\n";
+            return 1;
+          }
+
+          std::ostringstream s;
+          s << output_filename.substr(0, output_filename.find('.'));
+          s << "-depth";
+          s << output_filename.substr(output_filename.find('.'));
+
+          written = encoder->Encode(depth_handle, depth_image, s.str());
+          if (!written) {
+            fprintf(stderr, "could not write depth image\n");
+          }
+          else {
+            if (!option_quiet) {
+              std::cout << "Depth image written to " << s.str() << "\n";
+            }
+          }
+
+          heif_image_release(depth_image);
           heif_image_handle_release(depth_handle);
-          heif_image_handle_release(handle);
-          std::cerr << "Could not decode depth image: " << err.message << "\n";
-          return 1;
         }
-
-        std::ostringstream s;
-        s << output_filename.substr(0, output_filename.find('.'));
-        s << "-depth";
-        s << output_filename.substr(output_filename.find('.'));
-
-        written = encoder->Encode(depth_handle, depth_image, s.str());
-        if (!written) {
-          fprintf(stderr, "could not write depth image\n");
-        }
-        else {
-          printf("Depth image written to %s\n", s.str().c_str());
-        }
-
-        heif_image_release(depth_image);
-        heif_image_handle_release(depth_handle);
       }
 
 
       // --- aux images
 
-      int nAuxImages = heif_image_handle_get_number_of_auxiliary_images(handle, LIBHEIF_AUX_IMAGE_FILTER_OMIT_ALPHA | LIBHEIF_AUX_IMAGE_FILTER_OMIT_DEPTH);
-      if (nAuxImages>0) {
+      if (option_aux) {
+        int nAuxImages = heif_image_handle_get_number_of_auxiliary_images(handle, LIBHEIF_AUX_IMAGE_FILTER_OMIT_ALPHA | LIBHEIF_AUX_IMAGE_FILTER_OMIT_DEPTH);
+        if (nAuxImages > 0) {
 
-        std::vector<heif_item_id> auxIDs(nAuxImages);
-        heif_image_handle_get_list_of_auxiliary_image_IDs(handle,
-                                                          LIBHEIF_AUX_IMAGE_FILTER_OMIT_ALPHA | LIBHEIF_AUX_IMAGE_FILTER_OMIT_DEPTH,
-                                                          auxIDs.data(), nAuxImages);
+          std::vector<heif_item_id> auxIDs(nAuxImages);
+          heif_image_handle_get_list_of_auxiliary_image_IDs(handle,
+                                                            LIBHEIF_AUX_IMAGE_FILTER_OMIT_ALPHA | LIBHEIF_AUX_IMAGE_FILTER_OMIT_DEPTH,
+                                                            auxIDs.data(), nAuxImages);
 
-        for (heif_item_id auxId : auxIDs) {
+          for (heif_item_id auxId: auxIDs) {
 
-          struct heif_image_handle* aux_handle;
-          err = heif_image_handle_get_auxiliary_image_handle(handle, auxId, &aux_handle);
-          if (err.code) {
-            heif_image_handle_release(handle);
-            std::cerr << "Could not read auxiliary image\n";
-            return 1;
-          }
+            struct heif_image_handle* aux_handle;
+            err = heif_image_handle_get_auxiliary_image_handle(handle, auxId, &aux_handle);
+            if (err.code) {
+              heif_image_handle_release(handle);
+              std::cerr << "Could not read auxiliary image\n";
+              return 1;
+            }
 
-          int aux_bit_depth = heif_image_handle_get_luma_bits_per_pixel(aux_handle);
+            int aux_bit_depth = heif_image_handle_get_luma_bits_per_pixel(aux_handle);
 
-          struct heif_image* aux_image;
-          err = heif_decode_image(aux_handle,
-                                  &aux_image,
-                                  encoder->colorspace(false),
-                                  encoder->chroma(false, aux_bit_depth),
-                                  nullptr);
-          if (err.code) {
+            struct heif_image* aux_image;
+            err = heif_decode_image(aux_handle,
+                                    &aux_image,
+                                    encoder->colorspace(false),
+                                    encoder->chroma(false, aux_bit_depth),
+                                    nullptr);
+            if (err.code) {
+              heif_image_handle_release(aux_handle);
+              heif_image_handle_release(handle);
+              std::cerr << "Could not decode auxiliary image: " << err.message << "\n";
+              return 1;
+            }
+
+            const char* auxTypeC = nullptr;
+            err = heif_image_handle_get_auxiliary_type(aux_handle, &auxTypeC);
+            if (err.code) {
+              heif_image_handle_release(aux_handle);
+              heif_image_handle_release(handle);
+              std::cerr << "Could not get type of auxiliary image: " << err.message << "\n";
+              return 1;
+            }
+
+            std::string auxType = std::string(auxTypeC);
+
+            heif_image_handle_free_auxiliary_types(aux_handle, &auxTypeC);
+
+            std::ostringstream s;
+            s << output_filename.substr(0, output_filename.find('.'));
+            s << "-" + auxType;
+            s << output_filename.substr(output_filename.find('.'));
+
+            std::string auxFilename = s.str();
+
+            if (option_no_colons) {
+              std::replace(auxFilename.begin(), auxFilename.end(), ':', '_');
+            }
+
+            written = encoder->Encode(aux_handle, aux_image, auxFilename);
+            if (!written) {
+              fprintf(stderr, "could not write auxiliary image\n");
+            }
+            else {
+              if (!option_quiet) {
+                std::cout << "Auxiliary image written to " << auxFilename << "\n";
+              }
+            }
+
+            heif_image_release(aux_image);
             heif_image_handle_release(aux_handle);
-            heif_image_handle_release(handle);
-            std::cerr << "Could not decode auxiliary image: " << err.message << "\n";
-            return 1;
           }
-
-          const char* auxTypeC = nullptr;
-          err = heif_image_handle_get_auxiliary_type(aux_handle, &auxTypeC);
-          if (err.code) {
-            heif_image_handle_release(aux_handle);
-            heif_image_handle_release(handle);
-            std::cerr << "Could not get type of auxiliary image: " << err.message << "\n";
-            return 1;
-          }
-
-          std::string auxType = std::string(auxTypeC);
-
-          heif_image_handle_free_auxiliary_types(aux_handle, &auxTypeC);
-
-          std::ostringstream s;
-          s << output_filename.substr(0, output_filename.find('.'));
-          s << "-" + auxType;
-          s << output_filename.substr(output_filename.find('.'));
-
-          written = encoder->Encode(aux_handle, aux_image, s.str());
-          if (!written) {
-            fprintf(stderr, "could not write auxiliary image\n");
-          }
-          else {
-            printf("Auxiliary image written to %s\n", s.str().c_str());
-          }
-
-          heif_image_release(aux_image);
-          heif_image_handle_release(aux_handle);
         }
       }
-
 
       heif_image_handle_release(handle);
     }
