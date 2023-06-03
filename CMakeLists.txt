@@ -1,9 +1,9 @@
-cmake_minimum_required (VERSION 3.13)
+cmake_minimum_required (VERSION 3.0)
 
-project(libheif LANGUAGES C CXX VERSION 1.12.0.0)
+project(libheif LANGUAGES C CXX VERSION 1.16.2)
 
 # https://cmake.org/cmake/help/v3.1/policy/CMP0054.html
-cmake_policy(SET CMP0054 NEW)
+cmake_policy(VERSION 3.0...3.22)
 include(GNUInstallDirs)
 
 # The version number.
@@ -39,7 +39,6 @@ set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 set(CMAKE_VISIBILITY_INLINES_HIDDEN 1)
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -57,117 +56,224 @@ endif()
 
 LIST (APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake/modules")
 
-option(WITH_LIBDE265 "Build libde265 decoder" ON)
-if (WITH_LIBDE265)
-    find_package(Libde265)
-endif ()
+option(ENABLE_PLUGIN_LOADING "Support loading of plugins" ON)
+set(PLUGIN_DIRECTORY "${CMAKE_INSTALL_FULL_LIBDIR}/libheif" CACHE STRING "Plugin install directory")
 
-option(WITH_X265 "Build x265 encoder" ON)
-if (WITH_X265)
-    find_package(X265)
-endif ()
-
-option(WITH_AOM "Build aom encoder/decoder" ON)
-if (WITH_AOM)
-    find_package(LibAOM)
+if (ENABLE_PLUGIN_LOADING)
+    set(PLUGIN_LOADING_SUPPORTED_AND_ENABLED TRUE)
+    install(DIRECTORY DESTINATION ${PLUGIN_DIRECTORY} DIRECTORY_PERMISSIONS
+        OWNER_WRITE OWNER_READ OWNER_EXECUTE
+        GROUP_READ GROUP_EXECUTE
+        WORLD_READ WORLD_EXECUTE)
 endif()
 
-option(WITH_RAV1E "Build rav1e encoder" ON)
-if (WITH_RAV1E)
-    find_package(Rav1e)
+macro(plugin_option variableName packageName displayName displayType defaultPlugin)
+    option(WITH_${variableName} "Build ${displayName} ${displayType}" ON)
+    option(WITH_${variableName}_PLUGIN "Build ${displayName} as a plugin" ${defaultPlugin})
+    if (WITH_${variableName})
+        find_package(${packageName})
+    endif ()
+
+    if (${variableName}_FOUND AND WITH_${variableName}_PLUGIN AND PLUGIN_LOADING_SUPPORTED_AND_ENABLED)
+        set(msg "found (plugin)")
+    elseif (${variableName}_FOUND)
+        set(msg "found (built-in)")
+    elseif (WITH_${variableName})
+        set(msg "not found")
+    else()
+        set(msg "disabled")
+    endif ()
+
+    message("${displayName} (${displayType}): ${msg}")
+    unset(msg)
+endmacro()
+
+plugin_option(LIBDE265 LIBDE265 "libde265" "HEIC decoder" OFF)
+plugin_option(X265 X265 "x265" "HEIC encoder" OFF)
+plugin_option(KVAZAAR kvazaar "kvazaar" "kvazaar HEVC encoder" OFF)
+plugin_option(DAV1D DAV1D "Dav1d" "AVIF decoder" OFF)
+plugin_option(AOM_ENCODER AOM "aom" "AVIF encoder" OFF)
+plugin_option(AOM_DECODER AOM "aom" "AVIF decoder" OFF)
+plugin_option(SvtEnc SvtEnc "Svt-av1" "AVIF encoder" ON)
+plugin_option(RAV1E RAV1E "Rav1e" "AVIF encoder" ON)
+plugin_option(JPEG_DECODER JPEG "Jpeg" "JPEG decoder" OFF)
+plugin_option(JPEG_ENCODER JPEG "Jpeg" "JPEG encoder" OFF)
+
+option(WITH_UNCOMPRESSED_CODEC "Support internal ISO/IEC 23001-17 uncompressed codec (experimental)" OFF)
+
+# Libsharpyuv
+option(WITH_LIBSHARPYUV "Build libsharpyuv" ON)
+if (WITH_LIBSHARPYUV)
+    find_package(libsharpyuv)
+endif ()
+if (LIBSHARPYUV_FOUND)
+    message("libsharpyuv: found")
+elseif (WITH_${variableName})
+    message("libsharpyuv: not found")
+else()
+    message("libsharpyuv: disabled")
 endif ()
 
-option(WITH_DAV1D "Build dav1d decoder" ON)
-if (WITH_DAV1D)
-    find_package(Dav1d)
-endif ()
+# --- Create libheif pkgconfig file
 
-if (LIBDE265_FOUND)
-    message("HEIF decoder, libde265: found")
-else ()
-    message("HEIF decoder, libde265: not found")
-endif ()
-
-if (X265_FOUND)
-    message("HEIF encoder, x265: found")
-else ()
-    message("HEIF encoder, x265: not found")
-endif ()
-
-if (AOM_ENCODER_FOUND)
-    message("AVIF encoder, aom: found")
-else ()
-    message("AVIF encoder, aom: not found")
-endif ()
-
-if (AOM_DECODER_FOUND)
-    message("AVIF decoder, aom: found")
-else ()
-    message("AVIF decoder, aom: not found")
-endif ()
-
-if (RAV1E_FOUND)
-    message("AVIF encoder, rav1e: found")
-else ()
-    message("AVIF encoder, rav1e: not found")
-endif ()
-
-if (DAV1D_FOUND)
-    message("AVIF decoder, dav1d: found")
-else ()
-    message("AVIF decoder, dav1d: not found")
-endif ()
-
-
-# Create libheif pkgconfig file
 set(prefix ${CMAKE_INSTALL_PREFIX})
-set(exec_prefix ${CMAKE_INSTALL_PREFIX})
-set(libdir ${CMAKE_INSTALL_FULL_LIBDIR})
-set(includedir ${CMAKE_INSTALL_FULL_INCLUDEDIR})
-if (LIBDE265_FOUND)
+set(exec_prefix "\${prefix}")
+if(IS_ABSOLUTE "${CMAKE_INSTALL_LIBDIR}")
+    set(libdir "${CMAKE_INSTALL_LIBDIR}")
+else()
+    set(libdir "\${exec_prefix}/${CMAKE_INSTALL_LIBDIR}")
+endif()
+if(IS_ABSOLUTE "${CMAKE_INSTALL_INCLUDEDIR}")
+    set(includedir "${CMAKE_INSTALL_INCLUDEDIR}")
+else()
+    set(includedir "\${prefix}/${CMAKE_INSTALL_INCLUDEDIR}")
+endif()
+if (LIBDE265_FOUND AND NOT WITH_LIBDE265_PLUGIN)
     list(APPEND REQUIRES_PRIVATE "libde265")
-    set(have_libde265 yes)
-else()
-    set(have_libde265 no)
 endif()
-if (X265_FOUND)
+if (X265_FOUND AND NOT WITH_X265_PLUGIN)
     list(APPEND REQUIRES_PRIVATE "x265")
-    set(have_x265 yes)
-else()
-    set(have_x265 no)
 endif()
-if (AOM_DECODER_FOUND OR AOM_ENCODER_FOUND)
+if ((AOM_DECODER_FOUND AND NOT WITH_AOM_DECODER_PLUGIN) OR (AOM_ENCODER_FOUND AND NOT WITH_AOM_ENCODER_PLUGIN))
     list(APPEND REQUIRES_PRIVATE "aom")
 endif()
-if (DAV1D_FOUND)
+if (DAV1D_FOUND AND NOT WITH_DAV1D_PLUGIN)
     list(APPEND REQUIRES_PRIVATE "dav1d")
 endif()
-if (RAV1E_FOUND)
+if (RAV1E_FOUND AND NOT WITH_RAV1E_PLUGIN)
     list(APPEND REQUIRES_PRIVATE "rav1e")
 endif()
-if (AOM_DECODER_FOUND OR DAV1D_FOUND)
-    set(have_avif_decoder yes)
-else()
-    set(have_avif_decoder no)
+if (SvtEnc_FOUND AND NOT WITH_SvtEnc_PLUGIN)
+    list(APPEND REQUIRES_PRIVATE "SvtAv1Enc")
 endif()
-if (AOM_ENCODER_FOUND OR RAV1E_FOUND)
-    set(have_avif_encoder yes)
-else()
-    set(have_avif_encoder no)
+if ((JPEG_DECODER_FOUND AND NOT WITH_JPEG_DECODER_PLUGIN) OR (JPEG_ENCODER_FOUND AND NOT WITH_JPEG_ENCODER_PLUGIN))
+    list(APPEND REQUIRES_PRIVATE "libjpeg")
+endif()
+# TODO: JPEG
+if (LIBSHARPYUV_FOUND)
+    list(APPEND REQUIRES_PRIVATE "libsharpyuv")
 endif()
 list(JOIN REQUIRES_PRIVATE " " REQUIRES_PRIVATE)
-set(VERSION ${PROJECT_VERSION})
 
 configure_file(libheif.pc.in ${CMAKE_CURRENT_BINARY_DIR}/libheif.pc @ONLY)
 
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/libheif.pc
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
 
+# ---
+
 option(WITH_EXAMPLES "Build examples" ON)
+option(WITH_GDK_PIXBUF "Build gdk-pixbuf plugin" ON)
+
+option(WITH_REDUCED_VISIBILITY "Reduced symbol visibility in library" ON)
+
+option(WITH_DEFLATE_HEADER_COMPRESSION OFF)
+option(ENABLE_MULTITHREADING_SUPPORT "Switch off for platforms without multithreading support" ON)
+option(ENABLE_PARALLEL_TILE_DECODING "Will launch multiple decoders to decode tiles in parallel (requires ENABLE_MULTITHREADING_SUPPORT)" ON)
+
+if (WITH_REDUCED_VISIBILITY)
+    set(CMAKE_CXX_VISIBILITY_PRESET hidden)
+else ()
+    set(CMAKE_CXX_VISIBILITY_PRESET default)
+endif ()
 
 if(WITH_EXAMPLES)
     add_subdirectory (examples)
 endif()
+
+# --- API documentation
+
+# check if Doxygen is installed
+find_package(Doxygen)
+if (DOXYGEN_FOUND)
+    # set input and output files
+    set(DOXYGEN_IN ${CMAKE_CURRENT_SOURCE_DIR}/libheif/Doxyfile.in)
+    set(DOXYGEN_OUT ${CMAKE_CURRENT_BINARY_DIR}/Doxyfile)
+
+    # request to configure the file
+    configure_file(${DOXYGEN_IN} ${DOXYGEN_OUT} @ONLY)
+    message("Doxygen build started")
+
+    # note the option ALL which allows to build the docs together with the application
+    add_custom_target( doc_doxygen ALL
+        COMMAND ${DOXYGEN_EXECUTABLE} ${DOXYGEN_OUT}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+        COMMENT "Generating API documentation with Doxygen"
+        VERBATIM )
+else (DOXYGEN_FOUND)
+  message("Doxygen tool needs to be installed to generate the API documentation")
+endif (DOXYGEN_FOUND)
+
+# --- Testing
+
+# Disable testing by default because this requires building with full symbol visibility (switched off WITH_REDUCED_VISIBILITY).
+option(BUILD_TESTING "" OFF)
+include(CTest)
+if(BUILD_TESTING)
+    # TODO: fix tests on windows.
+    add_subdirectory (tests)
+endif()
+
+if (BUILD_TESTING AND WITH_REDUCED_VISIBILITY)
+    message(FATAL_ERROR "Tests can only be compiled with full symbol visibility (WITH_REDUCED_VISIBILITY=OFF)")
+endif()
+
+
+# --- Fuzzing
+
+option(WITH_FUZZERS "Build the fuzzers (and no other executables)" OFF)
+set(FUZZING_C_COMPILER "clang" CACHE STRING "C compiler to use for fuzzing")
+set(FUZZING_CXX_COMPILER "clang++" CACHE STRING "C++ compiler to use for fuzzing")
+set(FUZZING_COMPILE_OPTIONS "-fsanitize=fuzzer,address,shift,integer -fno-sanitize-recover=shift,integer" CACHE STRING "Compiler options for fuzzing")
+set(FUZZING_LINKER_OPTIONS "" CACHE STRING "Additional linking options for fuzzing")
+
+if (WITH_FUZZERS)
+    set(CMAKE_C_COMPILER ${FUZZING_C_COMPILER})
+    set(CMAKE_CXX_COMPILER ${FUZZING_CXX_COMPILER})
+    message("Using compiler: ${CMAKE_CXX_COMPILER}")
+    separate_arguments(FUZZING_COMPILE_OPTIONS UNIX_COMMAND "${FUZZING_COMPILE_OPTIONS}")
+    separate_arguments(FUZZING_LINKER UNIX_COMMAND "${FUZZING_LINKER_OPTIONS}")
+    add_compile_options(${FUZZING_COMPILE_OPTIONS})
+    add_link_options(${FUZZING_COMPILE_OPTIONS} ${FUZZING_LINKER_OPTIONS})
+
+    add_subdirectory(fuzzing)
+endif()
+
+if (CMAKE_CXX_COMPILER MATCHES "clang\\+\\+$")
+    add_compile_options(-Wno-tautological-constant-out-of-range-compare)
+endif()
+
 add_subdirectory (libheif)
-add_subdirectory (gdk-pixbuf)
+
+if (WITH_GDK_PIXBUF)
+  add_subdirectory (gdk-pixbuf)
+endif()
+
 add_subdirectory (gnome)
+
+
+# --- packaging (source code)
+
+set(CPACK_VERBATIM_VARIABLES YES)
+set(CPACK_SOURCE_GENERATOR TGZ)
+set(CPACK_SOURCE_PACKAGE_FILE_NAME libheif-${PACKAGE_VERSION})
+set(CPACK_SOURCE_IGNORE_FILES
+/.git/
+/.github/
+/.gitignore$
+/build/
+/cmake-build.*/
+/.deps/
+/.idea/
+/.clang-tidy
+~$
+/third-party/.*/ # only exclude the sub-directories, but keep the *.cmd files
+/Testing/
+/logos/
+/Makefile$
+/libtool$
+/libheif.pc$
+/config.h$
+stamp-h1$
+)
+include(CPack)

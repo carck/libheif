@@ -32,7 +32,7 @@ static void strided_copy(void* dest, const void* src, int width, int height,
     const uint8_t* _src = static_cast<const uint8_t*>(src);
     uint8_t* _dest = static_cast<uint8_t*>(dest);
     for (int y = 0; y < height; y++, _dest += width, _src += stride) {
-      memcpy(_dest, _src, stride);
+      memcpy(_dest, _src, width);
     }
   }
 }
@@ -191,6 +191,7 @@ EMSCRIPTEN_BINDINGS(libheif) {
     .value("heif_error_Ok", heif_error_Ok)
     .value("heif_error_Input_does_not_exist", heif_error_Input_does_not_exist)
     .value("heif_error_Invalid_input", heif_error_Invalid_input)
+    .value("heif_error_Plugin_loading_error", heif_error_Plugin_loading_error)
     .value("heif_error_Unsupported_filetype", heif_error_Unsupported_filetype)
     .value("heif_error_Unsupported_feature", heif_error_Unsupported_feature)
     .value("heif_error_Usage_error", heif_error_Usage_error)
@@ -202,6 +203,10 @@ EMSCRIPTEN_BINDINGS(libheif) {
     emscripten::enum_<heif_suberror_code>("heif_suberror_code")
     .value("heif_suberror_Unspecified", heif_suberror_Unspecified)
     .value("heif_suberror_Cannot_write_output_data", heif_suberror_Cannot_write_output_data)
+    .value("heif_suberror_Encoder_initialization", heif_suberror_Encoder_initialization)
+    .value("heif_suberror_Encoder_encoding", heif_suberror_Encoder_encoding)
+    .value("heif_suberror_Encoder_cleanup", heif_suberror_Encoder_cleanup)
+    .value("heif_suberror_Too_many_regions", heif_suberror_Too_many_regions)
     .value("heif_suberror_End_of_data", heif_suberror_End_of_data)
     .value("heif_suberror_Invalid_box_size", heif_suberror_Invalid_box_size)
     .value("heif_suberror_No_ftyp_box", heif_suberror_No_ftyp_box)
@@ -226,7 +231,10 @@ EMSCRIPTEN_BINDINGS(libheif) {
     .value("heif_suberror_Invalid_clean_aperture", heif_suberror_Invalid_clean_aperture)
     .value("heif_suberror_Invalid_overlay_data", heif_suberror_Invalid_overlay_data)
     .value("heif_suberror_Overlay_image_outside_of_canvas", heif_suberror_Overlay_image_outside_of_canvas)
+    .value("heif_suberror_Plugin_is_not_loaded", heif_suberror_Plugin_is_not_loaded)
+    .value("heif_suberror_Plugin_loading_error", heif_suberror_Plugin_loading_error)
     .value("heif_suberror_Auxiliary_image_type_unspecified", heif_suberror_Auxiliary_image_type_unspecified)
+    .value("heif_suberror_Cannot_read_plugin_directory", heif_suberror_Cannot_read_plugin_directory)
     .value("heif_suberror_No_or_invalid_primary_item", heif_suberror_No_or_invalid_primary_item)
     .value("heif_suberror_No_infe_box", heif_suberror_No_infe_box)
     .value("heif_suberror_Security_limit_exceeded", heif_suberror_Security_limit_exceeded)
@@ -241,12 +249,16 @@ EMSCRIPTEN_BINDINGS(libheif) {
     .value("heif_suberror_Unsupported_writer_version", heif_suberror_Unsupported_writer_version)
     .value("heif_suberror_Unsupported_parameter", heif_suberror_Unsupported_parameter)
     .value("heif_suberror_Invalid_parameter_value", heif_suberror_Invalid_parameter_value)
+    .value("heif_suberror_Invalid_property", heif_suberror_Invalid_property)
+    .value("heif_suberror_Item_reference_cycle", heif_suberror_Item_reference_cycle)
     .value("heif_suberror_Invalid_pixi_box", heif_suberror_Invalid_pixi_box)
+    .value("heif_suberror_Invalid_region_data", heif_suberror_Invalid_region_data)
     .value("heif_suberror_Unsupported_codec", heif_suberror_Unsupported_codec)
     .value("heif_suberror_Unsupported_image_type", heif_suberror_Unsupported_image_type)
     .value("heif_suberror_Unsupported_data_version", heif_suberror_Unsupported_data_version)
     .value("heif_suberror_Unsupported_color_conversion", heif_suberror_Unsupported_color_conversion)
     .value("heif_suberror_Unsupported_item_construction_method", heif_suberror_Unsupported_item_construction_method)
+    .value("heif_suberror_Unsupported_header_compression_method", heif_suberror_Unsupported_header_compression_method)
     .value("heif_suberror_Unsupported_bit_depth", heif_suberror_Unsupported_bit_depth)
     .value("heif_suberror_Wrong_tile_image_pixel_depth", heif_suberror_Wrong_tile_image_pixel_depth)
     .value("heif_suberror_Unknown_NCLX_color_primaries", heif_suberror_Unknown_NCLX_color_primaries)
@@ -257,7 +269,12 @@ EMSCRIPTEN_BINDINGS(libheif) {
     .value("heif_compression_HEVC", heif_compression_HEVC)
     .value("heif_compression_AVC", heif_compression_AVC)
     .value("heif_compression_JPEG", heif_compression_JPEG)
-    .value("heif_compression_AV1", heif_compression_AV1);
+    .value("heif_compression_AV1", heif_compression_AV1)
+    .value("heif_compression_VVC", heif_compression_VVC)
+    .value("heif_compression_EVC", heif_compression_EVC)
+    .value("heif_compression_JPEG2000", heif_compression_JPEG2000)
+    .value("heif_compression_uncompressed", heif_compression_uncompressed)
+    .value("heif_compression_mask", heif_compression_mask);
     emscripten::enum_<heif_chroma>("heif_chroma")
     .value("heif_chroma_undefined", heif_chroma_undefined)
     .value("heif_chroma_monochrome", heif_chroma_monochrome)
@@ -273,6 +290,13 @@ EMSCRIPTEN_BINDINGS(libheif) {
     // Aliases
     .value("heif_chroma_interleaved_24bit", heif_chroma_interleaved_24bit)
     .value("heif_chroma_interleaved_32bit", heif_chroma_interleaved_32bit);
+    emscripten::enum_<heif_chroma_downsampling_algorithm>("heif_chroma_downsampling_algorithm")
+    .value("heif_chroma_downsampling_average", heif_chroma_downsampling_average)
+    .value("heif_chroma_downsampling_nearest_neighbor", heif_chroma_downsampling_nearest_neighbor)
+    .value("heif_chroma_downsampling_sharp_yuv", heif_chroma_downsampling_sharp_yuv);
+    emscripten::enum_<heif_chroma_upsampling_algorithm>("heif_chroma_upsampling_algorithm")
+    .value("heif_chroma_upsampling_bilinear", heif_chroma_upsampling_bilinear)
+    .value("heif_chroma_upsampling_nearest_neighbor", heif_chroma_upsampling_nearest_neighbor);
     emscripten::enum_<heif_colorspace>("heif_colorspace")
     .value("heif_colorspace_undefined", heif_colorspace_undefined)
     .value("heif_colorspace_YCbCr", heif_colorspace_YCbCr)

@@ -18,11 +18,11 @@ jobs:
       WITH_X265: 1
       WITH_GRAPHICS: 1
       GO: 1
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
     steps:
     - uses: actions/checkout@v3
 
-    - uses: actions/setup-go@v2
+    - uses: actions/setup-go@v4
       with:
         go-version: "1.10"
 

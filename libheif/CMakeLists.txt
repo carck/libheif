@@ -3,167 +3,149 @@ include(CMakePackageConfigHelpers)
 configure_file(heif_version.h.in ${CMAKE_CURRENT_BINARY_DIR}/heif_version.h)
 
 set(libheif_headers
-    heif.h
-    heif_cxx.h
-    heif_plugin.h
-    ${CMAKE_CURRENT_BINARY_DIR}/heif_version.h)
+        heif.h
+        heif_cxx.h
+        heif_plugin.h
+        ${CMAKE_CURRENT_BINARY_DIR}/heif_version.h)
 
-add_library(heif
-    bitstream.cc
-    box.cc
-    error.cc
-    heif.cc
-    heif_context.cc
-    heif_file.cc
-    heif_image.cc
-    heif_hevc.cc
-    heif_avif.cc
-    heif_colorconversion.cc
-    heif_plugin_registry.cc
-    heif_plugin.cc
-    nclx.cc
-    bitstream.h
-    box.h
-    error.h
-    heif_api_structs.h
-    heif_context.h
-    heif_file.h
-    heif_image.h
-    heif_hevc.h
-    heif_avif.h
-    heif_colorconversion.h
-    heif_plugin_registry.h
-    heif_limits.h
-    nclx.h
-    logging.h
-    ${libheif_headers}
-)
+set(libheif_sources
+        bitstream.cc
+        box.cc
+        error.cc
+        heif.cc
+        context.cc
+        file.cc
+        pixelimage.cc
+        hevc.cc
+        avif.cc
+        plugin_registry.cc
+        heif_plugin.cc
+        nclx.cc
+        bitstream.h
+        box.h
+        error.h
+        api_structs.h
+        context.h
+        file.h
+        pixelimage.h
+        hevc.h
+        avif.h
+        plugin_registry.h
+        security_limits.h
+        init.cc init.h
+        nclx.h
+        logging.h
+        mask_image.cc
+        mask_image.h
+        metadata_compression.cc
+        metadata_compression.h
+        common_utils.cc
+        common_utils.h
+        region.cc
+        region.h
+        color-conversion/colorconversion.cc
+        color-conversion/colorconversion.h
+        color-conversion/rgb2yuv.cc
+        color-conversion/rgb2yuv.h
+        color-conversion/rgb2yuv_sharp.cc
+        color-conversion/rgb2yuv_sharp.h
+        color-conversion/yuv2rgb.cc
+        color-conversion/yuv2rgb.h
+        color-conversion/rgb2rgb.cc
+        color-conversion/rgb2rgb.h
+        color-conversion/monochrome.cc
+        color-conversion/monochrome.h
+        color-conversion/hdr_sdr.cc
+        color-conversion/hdr_sdr.h
+        color-conversion/alpha.cc
+        color-conversion/alpha.h
+        color-conversion/chroma_sampling.cc
+        color-conversion/chroma_sampling.h
+        ${libheif_headers})
+
+add_library(heif ${libheif_sources})
+
+if (ENABLE_PLUGIN_LOADING)
+    if (WIN32)
+        target_sources(heif PRIVATE plugins_windows.cc plugins_windows.h)
+    else ()
+        target_sources(heif PRIVATE plugins_unix.cc plugins_unix.h)
+    endif ()
+endif ()
 
 # Needed to find libheif/heif_version.h while compiling the library
 target_include_directories(heif PRIVATE ${libheif_BINARY_DIR} ${libheif_SOURCE_DIR})
 
 # Propagate include/libheif to consume the headers from other projects
 target_include_directories(heif
-                           PUBLIC
-                               $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/${PROJECT_NAME}>
-                               $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
-                               $<INSTALL_INTERFACE:include>)
+        PUBLIC
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/${PROJECT_NAME}>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>)
 
 set_target_properties(heif
-                      PROPERTIES
-                          VERSION ${PROJECT_VERSION}
-                          SOVERSION ${PROJECT_VERSION_MAJOR})
+        PROPERTIES
+        VERSION ${PROJECT_VERSION}
+        SOVERSION ${PROJECT_VERSION_MAJOR})
 
 target_compile_definitions(heif
-                           PUBLIC
-                               LIBHEIF_EXPORTS
-                               HAVE_VISIBILITY)
+        PUBLIC
+        LIBHEIF_EXPORTS
+        HAVE_VISIBILITY)
 
-if(LIBDE265_FOUND)
-    target_compile_definitions(heif PRIVATE HAVE_LIBDE265=1)
-    target_sources(heif
-                   PRIVATE
-                       heif_decoder_libde265.cc
-                       heif_decoder_libde265.h)
+if (PLUGIN_LOADING_SUPPORTED_AND_ENABLED)
+    target_compile_definitions(heif PRIVATE ENABLE_PLUGIN_LOADING=1)
+    target_link_libraries(heif PRIVATE ${CMAKE_DL_LIBS})
+endif ()
 
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${LIBDE265_CFLAGS}")
+add_subdirectory(plugins)
 
-    if (NOT "${LIBDE265_LIBRARY_DIRS}" STREQUAL "")
-        set(LIBDE265_LINKDIR "-L${LIBDE265_LIBRARY_DIRS}")
-    endif()
+if (LIBSHARPYUV_FOUND)
+    message("Compiling in 'libsharpyuv'")
+    target_compile_definitions(heif PUBLIC HAVE_LIBSHARPYUV=1)
+    target_include_directories(heif PRIVATE ${LIBSHARPYUV_INCLUDE_DIR})
+    target_link_libraries(heif PRIVATE ${LIBSHARPYUV_LIBRARIES} ${LIBSHARPYUV_LINKDIR})
+else ()
+    message("Not compiling 'libsharpyuv'")
+endif ()
 
-    include_directories(SYSTEM ${LIBDE265_INCLUDE_DIR})
-    target_link_libraries(heif PRIVATE ${LIBDE265_LIBRARIES} ${LIBDE265_LINKDIR})
-endif()
+if (WITH_DEFLATE_HEADER_COMPRESSION)
+    find_package(ZLIB REQUIRED)
+    if (ZLIB_FOUND)
+        target_link_libraries(heif PRIVATE ${ZLIB_LIBRARY})
+        target_include_directories(heif PRIVATE ${ZLIB_INCLUDE_DIRS})
+        target_compile_definitions(heif PRIVATE WITH_DEFLATE_HEADER_COMPRESSION=1)
+    endif ()
+endif ()
 
-if(X265_FOUND)
-    target_compile_definitions(heif PRIVATE HAVE_X265=1)
+if (ENABLE_MULTITHREADING_SUPPORT)
+    find_package(Threads)
+    target_link_libraries(heif PRIVATE ${CMAKE_THREAD_LIBS_INIT})
+
+    target_compile_definitions(heif PRIVATE ENABLE_MULTITHREADING_SUPPORT=1)
+    if (ENABLE_PARALLEL_TILE_DECODING)
+        target_compile_definitions(heif PRIVATE ENABLE_PARALLEL_TILE_DECODING=1)
+    endif ()
+endif ()
+
+if (WITH_UNCOMPRESSED_CODEC)
+    target_compile_definitions(heif PUBLIC WITH_UNCOMPRESSED_CODEC=1)
     target_sources(heif PRIVATE
-        heif_encoder_x265.cc
-        heif_encoder_x265.h
-    )
-
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${X265_CFLAGS}")
-
-    if (NOT "${X265_LIBRARY_DIRS}" STREQUAL "")
-        set(X265_LINKDIR "-L${X265_LIBRARY_DIRS}")
-    endif()
-
-    include_directories(SYSTEM ${X265_INCLUDE_DIR})
-    target_link_libraries(heif PRIVATE ${X265_LIBRARIES} ${X265_LINKDIR})
-endif()
-
-if(AOM_ENCODER_FOUND OR AOM_DECODER_FOUND)
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${AOM_CFLAGS}")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${AOM_CFLAGS}")
-
-  if (NOT "${AOM_LIBRARY_DIRS}" STREQUAL "")
-    set(AOM_LINKDIR "-L${AOM_LIBRARY_DIRS}")
-  endif()
-
-  include_directories(SYSTEM ${AOM_INCLUDE_DIR})
-  target_link_libraries(heif PRIVATE ${AOM_LIBRARIES} ${AOM_LINKDIR})
-endif()
-if(AOM_ENCODER_FOUND)
-  target_compile_definitions(heif PRIVATE HAVE_AOM_ENCODER=1)
-  target_sources(heif PRIVATE
-    heif_encoder_aom.cc
-    heif_encoder_aom.h
-  )
-endif()
-if(AOM_DECODER_FOUND)
-  target_compile_definitions(heif PRIVATE HAVE_AOM_DECODER=1)
-  target_sources(heif PRIVATE
-    heif_decoder_aom.cc
-    heif_decoder_aom.h
-  )
-endif()
-
-if(RAV1E_FOUND)
-    target_compile_definitions(heif PRIVATE HAVE_RAV1E=1)
-    target_sources(heif PRIVATE
-            heif_encoder_rav1e.cc
-            heif_encoder_rav1e.h
-            )
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${RAV1E_CFLAGS}")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${RAV1E_CFLAGS}")
-
-    if (NOT "${RAV1E_LIBRARY_DIRS}" STREQUAL "")
-        set(RAV1E_LINKDIR "-L${RAV1E_LIBRARY_DIRS}")
-    endif()
-
-    include_directories(SYSTEM ${RAV1E_INCLUDE_DIR})
-    target_link_libraries(heif PRIVATE ${RAV1E_LIBRARIES} ${RAV1E_LINKDIR})
-endif()
-
-if(DAV1D_FOUND)
-    target_compile_definitions(heif PRIVATE HAVE_DAV1D=1)
-    target_sources(heif PRIVATE
-            heif_decoder_dav1d.cc
-            heif_decoder_dav1d.h
-            )
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${DAV1D_CFLAGS}")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${DAV1D_CFLAGS}")
-
-    if (NOT "${DAV1D_LIBRARY_DIRS}" STREQUAL "")
-        set(DAV1D_LINKDIR "-L${DAV1D_LIBRARY_DIRS}")
-    endif()
-
-    include_directories(SYSTEM ${DAV1D_INCLUDE_DIR})
-    target_link_libraries(heif PRIVATE ${DAV1D_LIBRARIES} ${DAV1D_LINKDIR})
+            uncompressed_image.h
+            uncompressed_image.cc)
 endif ()
 
 write_basic_package_version_file(${PROJECT_NAME}-config-version.cmake COMPATIBILITY ExactVersion)
 
 install(TARGETS heif EXPORT ${PROJECT_NAME}-config
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-)
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        )
 
 install(FILES ${libheif_headers} DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${PROJECT_NAME})
 
 install(EXPORT ${PROJECT_NAME}-config DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}")
 
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}-config-version.cmake DESTINATION
-    "${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}")
+        "${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}")

@@ -25,6 +25,11 @@
 extern "C" {
 #endif
 
+/*! \file heif.h
+ *
+ * Public API for libheif.
+*/
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -33,18 +38,20 @@ extern "C" {
 
 // API versions table
 //
-// release    depth.rep   dec.options   enc.options   heif_reader   heif_writer  col.profile
-// -----------------------------------------------------------------------------------------
-//  1.0          1             1           N/A           N/A           N/A          N/A
-//  1.1          1             1           N/A           N/A            1           N/A
-//  1.3          1             1            1             1             1           N/A
-//  1.4          1             1            1             1             1            1
-//  1.7          1             2            1             1             1            1
-//  1.9.2        1             2            2             1             1            1
-//  1.10         1             2            3             1             1            1
-//  1.11         1             2            4             1             1            1
-//  1.13         1             3            4             1             1            1
-
+// release    dec.options   enc.options   heif_reader   heif_writer   depth.rep   col.profile
+// ------------------------------------------------------------------------------------------
+//  1.0            1           N/A           N/A           N/A           1           N/A
+//  1.1            1           N/A           N/A            1            1           N/A
+//  1.3            1            1             1             1            1           N/A
+//  1.4            1            1             1             1            1            1
+//  1.7            2            1             1             1            1            1
+//  1.9.2          2            2             1             1            1            1
+//  1.10           2            3             1             1            1            1
+//  1.11           2            4             1             1            1            1
+//  1.13           3            4             1             1            1            1
+//  1.14           3            5             1             1            1            1
+//  1.15           4            5             1             1            1            1
+//  1.16           5            6             1             1            1            1
 
 #if defined(_MSC_VER) && !defined(LIBHEIF_STATIC_BUILD)
 #ifdef LIBHEIF_EXPORTS
@@ -62,24 +69,27 @@ extern "C" {
 #define LIBHEIF_API
 #endif
 
-#define heif_fourcc(a, b, c, d) ((a<<24) | (b<<16) | (c<<8) | d)
+#define heif_fourcc(a, b, c, d) ((uint32_t)((a<<24) | (b<<16) | (c<<8) | d))
 
 
 /* === version numbers === */
 
 // Version string of linked libheif library.
 LIBHEIF_API const char* heif_get_version(void);
-// Numeric version of linked libheif library, encoded as 0xHHMMLL00 = HH.MM.LL.
+
+// Numeric version of linked libheif library, encoded as BCD 0xHHMMLL00 = HH.MM.LL.
+// For example: 0x02143000 is version 2.14.30
 LIBHEIF_API uint32_t heif_get_version_number(void);
 
-// Numeric part "HH" from above.
+// Numeric part "HH" from above. Returned as a decimal number (not BCD).
 LIBHEIF_API int heif_get_version_number_major(void);
-// Numeric part "MM" from above.
+// Numeric part "MM" from above. Returned as a decimal number (not BCD).
 LIBHEIF_API int heif_get_version_number_minor(void);
-// Numeric part "LL" from above.
+// Numeric part "LL" from above. Returned as a decimal number (not BCD).
 LIBHEIF_API int heif_get_version_number_maintenance(void);
 
 // Helper macros to check for given versions of libheif at compile time.
+// Note: h, m, l should be 2-digit BCD numbers. I.e., decimal 17 = 0x17 (BCD)
 #define LIBHEIF_MAKE_VERSION(h, m, l) ((h) << 24 | (m) << 16 | (l) << 8)
 #define LIBHEIF_HAVE_VERSION(h, m, l) (LIBHEIF_NUMERIC_VERSION >= LIBHEIF_MAKE_VERSION(h, m, l))
 
@@ -121,7 +131,10 @@ enum heif_error_code
   heif_error_Encoding_error = 9,
 
   // Application has asked for a color profile type that does not exist
-  heif_error_Color_profile_does_not_exist = 10
+  heif_error_Color_profile_does_not_exist = 10,
+
+  // Error loading a dynamic plugin
+  heif_error_Plugin_loading_error = 11
 };
 
 
@@ -214,6 +227,9 @@ enum heif_suberror_code
 
   heif_suberror_Unknown_NCLX_matrix_coefficients = 135,
 
+  // Invalid specification of region item
+  heif_suberror_Invalid_region_data = 136,
+
 
   // --- Memory_allocation_error ---
 
@@ -246,6 +262,12 @@ enum heif_suberror_code
   // The value for the given parameter is not in the valid range.
   heif_suberror_Invalid_parameter_value = 2006,
 
+  // Error in property specification
+  heif_suberror_Invalid_property = 2007,
+
+  // Image reference cycle found in iref
+  heif_suberror_Item_reference_cycle = 2008,
+
 
   // --- Unsupported_feature ---
 
@@ -262,6 +284,8 @@ enum heif_suberror_code
 
   heif_suberror_Unsupported_item_construction_method = 3004,
 
+  heif_suberror_Unsupported_header_compression_method = 3005,
+
 
   // --- Encoder_plugin_error ---
 
@@ -271,6 +295,19 @@ enum heif_suberror_code
   // --- Encoding_error ---
 
   heif_suberror_Cannot_write_output_data = 5000,
+
+  heif_suberror_Encoder_initialization = 5001,
+  heif_suberror_Encoder_encoding = 5002,
+  heif_suberror_Encoder_cleanup = 5003,
+
+  heif_suberror_Too_many_regions = 5004,
+
+
+  // --- Plugin loading error ---
+
+  heif_suberror_Plugin_loading_error = 6000,        // a specific plugin file cannot be loaded
+  heif_suberror_Plugin_is_not_loaded = 6001,        // trying to remove a plugin that is not loaded
+  heif_suberror_Cannot_read_plugin_directory = 6002 // error while scanning the directory for plugins
 };
 
 
@@ -288,7 +325,71 @@ struct heif_error
 
 
 typedef uint32_t heif_item_id;
+typedef uint32_t heif_property_id;
 
+
+
+// ========================= library initialization ======================
+
+// You should call heif_init() when you start using libheif and heif_deinit() when you are finished.
+// These calls are reference counted. Each call to heif_init() should be matched by one call to heif_deinit().
+// For backwards compatibility, it is not really necessary to call heif_init(), but if you don't, the plugins
+// registered by default may not be freed correctly.
+// However, this should not be mixed, i.e. one part of your program does use heif_init()/heif_deinit() and another doesn't.
+// If in doubt, enclose everything with init/deinit.
+
+struct heif_init_params
+{
+  int version;
+
+  // currently no parameters
+};
+
+
+// You may pass nullptr to get default parameters. Currently, no parameters are supported.
+LIBHEIF_API
+struct heif_error heif_init(struct heif_init_params*);
+
+LIBHEIF_API
+void heif_deinit();
+
+
+// --- Plugins are currently only supported on Unix platforms.
+
+enum heif_plugin_type
+{
+  heif_plugin_type_encoder,
+  heif_plugin_type_decoder
+};
+
+struct heif_plugin_info
+{
+  int version; // version of this info struct
+  enum heif_plugin_type type;
+  const void* plugin;
+  void* internal_handle; // for internal use only
+};
+
+LIBHEIF_API
+struct heif_error heif_load_plugin(const char* filename, struct heif_plugin_info const** out_plugin);
+
+LIBHEIF_API
+struct heif_error heif_load_plugins(const char* directory,
+                                    const struct heif_plugin_info** out_plugins,
+                                    int* out_nPluginsLoaded,
+                                    int output_array_size);
+
+LIBHEIF_API
+struct heif_error heif_unload_plugin(const struct heif_plugin_info* plugin);
+
+// Get a NULL terminated array of the plugin directories that are searched by libheif.
+// This includes the paths specified in the environment variable LIBHEIF_PLUGIN_PATHS and the built-in path
+// (if not overridden by the environment variable).
+LIBHEIF_API
+const char*const* heif_get_plugin_directories();
+
+LIBHEIF_API
+void heif_free_plugin_directories(const char*const*);
 
 
 // ========================= file type check ======================
@@ -305,12 +406,15 @@ enum heif_filetype_result
 LIBHEIF_API
 enum heif_filetype_result heif_check_filetype(const uint8_t* data, int len);
 
+LIBHEIF_API
+int heif_check_jpeg_filetype(const uint8_t* data, int len);
 
-// DEPRECATED, use heif_brand2 instead
+
+// DEPRECATED, use heif_brand2 and the heif_brand2_* constants below instead
 enum heif_brand
 {
   heif_unknown_brand,
-  heif_heic, // the usual HEIF images
+  heif_heic, // HEIF image with h265
   heif_heix, // 10bit images, or anything that uses h265 with range extension
   heif_hevc, heif_hevx, // brands for image sequences
   heif_heim, // multiview
@@ -319,8 +423,12 @@ enum heif_brand
   heif_hevs, // scalable sequence
   heif_mif1, // image, any coding algorithm
   heif_msf1, // sequence, any coding algorithm
-  heif_avif,
-  heif_avis
+  heif_avif, // HEIF image with AV1
+  heif_avis,
+  heif_vvic, // VVC image
+  heif_vvis, // VVC sequence
+  heif_evbi, // EVC image
+  heif_evbs, // EVC sequence
 };
 
 // input data should be at least 12 bytes
@@ -330,6 +438,26 @@ enum heif_brand heif_main_brand(const uint8_t* data, int len);
 
 
 typedef uint32_t heif_brand2;
+
+#define heif_brand2_heic   heif_fourcc('h','e','i','c') // HEIF image with h265
+#define heif_brand2_heix   heif_fourcc('h','e','i','x') // 10bit images, or anything that uses h265 with range extension
+#define heif_brand2_hevc   heif_fourcc('h','e','v','c') // image sequences
+#define heif_brand2_hevx   heif_fourcc('h','e','v','x') // HDR image sequence
+#define heif_brand2_heim   heif_fourcc('h','e','i','m') // multiview
+#define heif_brand2_heis   heif_fourcc('h','e','i','s') // scalable
+#define heif_brand2_hevm   heif_fourcc('h','e','v','m') // multiview sequence
+#define heif_brand2_hevs   heif_fourcc('h','e','v','s') // scalable sequence
+#define heif_brand2_avif   heif_fourcc('a','v','i','f') // AVIF image (AV1)
+#define heif_brand2_avis   heif_fourcc('a','v','i','s') // AVIF sequence
+#define heif_brand2_mif1   heif_fourcc('m','i','f','1') // image, any coding algorithm
+#define heif_brand2_mif2   heif_fourcc('m','i','f','2') // image, any coding algorithm
+#define heif_brand2_msf1   heif_fourcc('m','s','f','1') // sequence, any coding algorithm
+#define heif_brand2_vvic   heif_fourcc('v','v','i','c') // VVC image
+#define heif_brand2_vvis   heif_fourcc('v','v','i','s') // VVC sequence
+#define heif_brand2_evbi   heif_fourcc('e','v','b','i') // EVC image
+#define heif_brand2_evbs   heif_fourcc('e','v','b','s') // EVC sequence
+#define heif_brand2_jpeg   heif_fourcc('j','p','e','g') // JPEG, per ISO/IEC 23008-12 Annex H.4
+#define heif_brand2_jpgs   heif_fourcc('j','p','g','s') // JPEG sequence, per ISO/IEC 23008-12 Annex H.5
 
 // input data should be at least 12 bytes
 LIBHEIF_API
@@ -365,6 +493,8 @@ void heif_free_list_of_compatible_brands(heif_brand2* brands_list);
 // - image/heif           HEIF file using any other compression
 // - image/heic-sequence  HEIF image sequence using h265 compression
 // - image/heif-sequence  HEIF image sequence using any other compression
+// - image/avif           AVIF image
+// - image/avif-sequence  AVIF sequence
 // - image/jpeg    JPEG image
 // - image/png     PNG image
 // If the format could not be detected, an empty string is returned.
@@ -412,7 +542,7 @@ struct heif_reader
   // --- version 1 functions ---
   int64_t (* get_position)(void* userdata);
 
-  // The functions read(), and seek() return 0 on success.
+  // The functions read(), and seek() return heif_error_ok on success.
   // Generally, libheif will make sure that we do not read past the file size.
   int (* read)(void* data,
                size_t size,
@@ -485,7 +615,7 @@ LIBHEIF_API
 struct heif_error heif_context_get_primary_image_handle(struct heif_context* ctx,
                                                         struct heif_image_handle**);
 
-// Get the handle for a specific top-level image from an image ID.
+// Get the image handle for a known image ID.
 LIBHEIF_API
 struct heif_error heif_context_get_image_handle(struct heif_context* ctx,
                                                 heif_item_id id,
@@ -501,6 +631,11 @@ void heif_context_debug_dump_boxes_to_file(struct heif_context* ctx, int fd);
 LIBHEIF_API
 void heif_context_set_maximum_image_size_limit(struct heif_context* ctx, int maximum_width);
 
+// If the maximum threads number is set to 0, the image tiles are decoded in the main thread.
+// This is different from setting it to 1, which will generate a single background thread to decode the tiles.
+// Note that this setting only affects libheif itself. The codecs itself may still use multi-threaded decoding.
+// You can use it, for example, in cases where you are decoding several images in parallel anyway you thus want
+// to minimize parallelism in each decoder.
 LIBHEIF_API
 void heif_context_set_max_decoding_threads(struct heif_context* ctx, int max_threads);
 
@@ -522,6 +657,9 @@ void heif_image_handle_release(const struct heif_image_handle*);
 // Check whether the given image_handle is the primary image of the file.
 LIBHEIF_API
 int heif_image_handle_is_primary_image(const struct heif_image_handle* handle);
+
+LIBHEIF_API
+heif_item_id heif_image_handle_get_item_id(const struct heif_image_handle* handle);
 
 // Get the resolution of an image.
 LIBHEIF_API
@@ -653,11 +791,16 @@ int heif_image_handle_get_list_of_auxiliary_image_IDs(const struct heif_image_ha
                                                       int aux_filter,
                                                       heif_item_id* ids, int count);
 
-// You are responsible to deallocate the returned buffer with heif_image_handle_free_auxiliary_types().
+// You are responsible to deallocate the returned buffer with heif_image_handle_release_auxiliary_type().
 LIBHEIF_API
 struct heif_error heif_image_handle_get_auxiliary_type(const struct heif_image_handle* handle,
                                                        const char** out_type);
 
+LIBHEIF_API
+void heif_image_handle_release_auxiliary_type(const struct heif_image_handle* handle,
+                                              const char** out_type);
+
+// DEPRECATED (because typo in function name). Use heif_image_handle_release_auxiliary_type() instead.
 LIBHEIF_API
 void heif_image_handle_free_auxiliary_types(const struct heif_image_handle* handle,
                                             const char** out_type);
@@ -671,8 +814,8 @@ struct heif_error heif_image_handle_get_auxiliary_image_handle(const struct heif
 
 // ------------------------- metadata (Exif / XMP) -------------------------
 
-// How many metadata blocks are attached to an image. Usually, the only metadata is
-// an "Exif" block.
+// How many metadata blocks are attached to an image. If you only want to get EXIF data,
+// set the type_filter to "Exif". Otherwise, set the type_filter to NULL.
 LIBHEIF_API
 int heif_image_handle_get_number_of_metadata_blocks(const struct heif_image_handle* handle,
                                                     const char* type_filter);
@@ -692,6 +835,8 @@ LIBHEIF_API
 const char* heif_image_handle_get_metadata_type(const struct heif_image_handle* handle,
                                                 heif_item_id metadata_id);
 
+// For EXIF, the content type is empty.
+// For XMP, the content type is "application/rdf+xml".
 LIBHEIF_API
 const char* heif_image_handle_get_metadata_content_type(const struct heif_image_handle* handle,
                                                         heif_item_id metadata_id);
@@ -709,6 +854,9 @@ LIBHEIF_API
 struct heif_error heif_image_handle_get_metadata(const struct heif_image_handle* handle,
                                                  heif_item_id metadata_id,
                                                  void* out_data);
+
+
+// ------------------------- color profiles -------------------------
 
 enum heif_color_profile_type
 {
@@ -851,6 +999,108 @@ struct heif_error heif_image_get_nclx_color_profile(const struct heif_image* ima
                                                     struct heif_color_profile_nclx** out_data);
 
 
+// ------------------------- item properties -------------------------
+
+enum heif_item_property_type
+{
+//  heif_item_property_unknown = -1,
+  heif_item_property_type_invalid = 0,
+  heif_item_property_type_user_description = heif_fourcc('u', 'd', 'e', 's'),
+  heif_item_property_type_transform_mirror = heif_fourcc('i', 'm', 'i', 'r'),
+  heif_item_property_type_transform_rotation = heif_fourcc('i', 'r', 'o', 't'),
+  heif_item_property_type_transform_crop = heif_fourcc('c', 'l', 'a', 'p'),
+  heif_item_property_type_image_size = heif_fourcc('i', 's', 'p', 'e')
+};
+
+// Get the heif_property_id for a heif_item_id.
+// You may specify which property 'type' you want to receive.
+// If you specify 'heif_item_property_type_invalid', all properties associated to that item are returned.
+// The number of properties is returned, which are not more than 'count' if (out_list != nullptr).
+// By setting out_list==nullptr, you can query the number of properties, 'count' is ignored.
+LIBHEIF_API
+int heif_item_get_properties_of_type(const struct heif_context* context,
+                                     heif_item_id id,
+                                     enum heif_item_property_type type,
+                                     heif_property_id* out_list,
+                                     int count);
+
+// Returns all transformative properties in the correct order.
+// This includes "irot", "imir", "clap".
+// The number of properties is returned, which are not more than 'count' if (out_list != nullptr).
+// By setting out_list==nullptr, you can query the number of properties, 'count' is ignored.
+LIBHEIF_API
+int heif_item_get_transformation_properties(const struct heif_context* context,
+                                            heif_item_id id,
+                                            heif_property_id* out_list,
+                                            int count);
+
+LIBHEIF_API
+enum heif_item_property_type heif_item_get_property_type(const struct heif_context* context,
+                                                         heif_item_id id,
+                                                         heif_property_id property_id);
+
+// The strings are managed by libheif. They will be deleted in heif_property_user_description_release().
+struct heif_property_user_description
+{
+  int version;
+
+  // version 1
+
+  const char* lang;
+  const char* name;
+  const char* description;
+  const char* tags;
+};
+
+// Get the "udes" user description property content.
+// Undefined strings are returned as empty strings.
+LIBHEIF_API
+struct heif_error heif_item_get_property_user_description(const struct heif_context* context,
+                                                          heif_item_id itemId,
+                                                          heif_property_id propertyId,
+                                                          struct heif_property_user_description** out);
+
+// Add a "udes" user description property to the item.
+// If any string pointers are NULL, an empty string will be used instead.
+LIBHEIF_API
+struct heif_error heif_item_add_property_user_description(const struct heif_context* context,
+                                                          heif_item_id itemId,
+                                                          const struct heif_property_user_description* description,
+                                                          heif_property_id* out_propertyId);
+
+// Release all strings and the object itself.
+// Only call for objects that you received from heif_item_get_property_user_description().
+LIBHEIF_API
+void heif_property_user_description_release(struct heif_property_user_description*);
+
+enum heif_transform_mirror_direction
+{
+  heif_transform_mirror_direction_vertical = 0,    // flip image vertically
+  heif_transform_mirror_direction_horizontal = 1   // flip image horizontally
+};
+
+LIBHEIF_API
+enum heif_transform_mirror_direction heif_item_get_property_transform_mirror(const struct heif_context* context,
+                                                                             heif_item_id itemId,
+                                                                             heif_property_id propertyId);
+
+// Returns only 0, 90, 180, or 270 angle values.
+// Returns -1 in case of error (but it will only return an error in case of wrong usage).
+LIBHEIF_API
+int heif_item_get_property_transform_rotation_ccw(const struct heif_context* context,
+                                                  heif_item_id itemId,
+                                                  heif_property_id propertyId);
+
+// Returns the number of pixels that should be removed from the four edges.
+// Because of the way this data is stored, you have to pass the image size at the moment of the crop operation
+// to compute the cropped border sizes.
+LIBHEIF_API
+void heif_item_get_property_transform_crop_borders(const struct heif_context* context,
+                                                   heif_item_id itemId,
+                                                   heif_property_id propertyId,
+                                                   int image_width, int image_height,
+                                                   int* left, int* top, int* right, int* bottom);
+
 
 // ========================= heif_image =========================
 
@@ -869,7 +1119,12 @@ enum heif_compression_format
   heif_compression_HEVC = 1,
   heif_compression_AVC = 2,
   heif_compression_JPEG = 3,
-  heif_compression_AV1 = 4
+  heif_compression_AV1 = 4,
+  heif_compression_VVC = 5,
+  heif_compression_EVC = 6,
+  heif_compression_JPEG2000 = 7,  // ISO/IEC 15444-16:2021
+  heif_compression_uncompressed = 8, // ISO/IEC 23001-17:2023
+  heif_compression_mask = 9          // ISO/IEC 23008-12:2022 Section 6.10.2
 };
 
 enum heif_chroma
@@ -881,10 +1136,10 @@ enum heif_chroma
   heif_chroma_444 = 3,
   heif_chroma_interleaved_RGB = 10,
   heif_chroma_interleaved_RGBA = 11,
-  heif_chroma_interleaved_RRGGBB_BE = 12,
-  heif_chroma_interleaved_RRGGBBAA_BE = 13,
-  heif_chroma_interleaved_RRGGBB_LE = 14,
-  heif_chroma_interleaved_RRGGBBAA_LE = 15
+  heif_chroma_interleaved_RRGGBB_BE = 12,   // HDR, big endian.
+  heif_chroma_interleaved_RRGGBBAA_BE = 13, // HDR, big endian.
+  heif_chroma_interleaved_RRGGBB_LE = 14,   // HDR, little endian.
+  heif_chroma_interleaved_RRGGBBAA_LE = 15  // HDR, little endian.
 };
 
 // DEPRECATED ENUM NAMES
@@ -895,8 +1150,24 @@ enum heif_chroma
 enum heif_colorspace
 {
   heif_colorspace_undefined = 99,
+
+  // heif_colorspace_YCbCr should be used with one of these heif_chroma values:
+  // * heif_chroma_444
+  // * heif_chroma_422
+  // * heif_chroma_420
   heif_colorspace_YCbCr = 0,
+
+  // heif_colorspace_RGB should be used with one of these heif_chroma values:
+  // * heif_chroma_444 (for planar RGB)
+  // * heif_chroma_interleaved_RGB
+  // * heif_chroma_interleaved_RGBA
+  // * heif_chroma_interleaved_RRGGBB_BE
+  // * heif_chroma_interleaved_RRGGBBAA_BE
+  // * heif_chroma_interleaved_RRGGBB_LE
+  // * heif_chroma_interleaved_RRGGBBAA_LE
   heif_colorspace_RGB = 1,
+
+  // heif_colorspace_monochrome should only be used with heif_chroma = heif_chroma_monochrome
   heif_colorspace_monochrome = 2
 };
 
@@ -917,6 +1188,36 @@ enum heif_progress_step
 {
   heif_progress_step_total = 0,
   heif_progress_step_load_tile = 1
+};
+
+
+enum heif_chroma_downsampling_algorithm
+{
+  heif_chroma_downsampling_nearest_neighbor = 1,
+  heif_chroma_downsampling_average = 2,
+
+  // Combine with 'heif_chroma_upsampling_bilinear' for best quality.
+  // Makes edges look sharper when using YUV 420 with bilinear chroma upsampling.
+  heif_chroma_downsampling_sharp_yuv = 3
+};
+
+enum heif_chroma_upsampling_algorithm
+{
+  heif_chroma_upsampling_nearest_neighbor = 1,
+  heif_chroma_upsampling_bilinear = 2
+};
+
+struct heif_color_conversion_options
+{
+  uint8_t version;
+
+  // --- version 1 options
+
+  enum heif_chroma_downsampling_algorithm preferred_chroma_downsampling_algorithm;
+  enum heif_chroma_upsampling_algorithm preferred_chroma_upsampling_algorithm;
+
+  // When set to 'false', libheif may also use a different algorithm if the preferred one is not available.
+  uint8_t only_use_preferred_chroma_algorithm;
 };
 
 
@@ -947,6 +1248,18 @@ struct heif_decoding_options
   // When enabled, an error is returned for invalid input. Otherwise, it will try its best and
   // add decoding warnings to the decoded heif_image. Default is non-strict.
   uint8_t strict_decoding;
+
+  // version 4 options
+
+  // name_id of the decoder to use for the decoding.
+  // If set to NULL (default), the highest priority decoder is chosen.
+  // The priority is defined in the plugin.
+  const char* decoder_id;
+
+
+  // version 5 options
+
+  struct heif_color_conversion_options color_conversion_options;
 };
 
 
@@ -1087,6 +1400,68 @@ LIBHEIF_API
 void heif_image_release(const struct heif_image*);
 
 
+// Note: a value of 0 for any of these values indicates that the value is undefined.
+// The unit of these values is Candelas per square meter.
+struct heif_content_light_level
+{
+  uint16_t max_content_light_level;
+  uint16_t max_pic_average_light_level;
+};
+
+LIBHEIF_API
+int heif_image_has_content_light_level(const struct heif_image*);
+
+LIBHEIF_API
+void heif_image_get_content_light_level(const struct heif_image*, struct heif_content_light_level* out);
+
+LIBHEIF_API
+void heif_image_set_content_light_level(const struct heif_image*, const struct heif_content_light_level* in);
+
+
+// Note: color coordinates are defined according to the CIE 1931 definition of x as specified in ISO 11664-1 (see also ISO 11664-3 and CIE 15).
+struct heif_mastering_display_colour_volume
+{
+  uint16_t display_primaries_x[3];
+  uint16_t display_primaries_y[3];
+  uint16_t white_point_x;
+  uint16_t white_point_y;
+  uint32_t max_display_mastering_luminance;
+  uint32_t min_display_mastering_luminance;
+};
+
+// The units for max_display_mastering_luminance and min_display_mastering_luminance is Candelas per square meter.
+struct heif_decoded_mastering_display_colour_volume
+{
+  float display_primaries_x[3];
+  float display_primaries_y[3];
+  float white_point_x;
+  float white_point_y;
+  double max_display_mastering_luminance;
+  double min_display_mastering_luminance;
+};
+
+LIBHEIF_API
+int heif_image_has_mastering_display_colour_volume(const struct heif_image*);
+
+LIBHEIF_API
+void heif_image_get_mastering_display_colour_volume(const struct heif_image*, struct heif_mastering_display_colour_volume* out);
+
+LIBHEIF_API
+void heif_image_set_mastering_display_colour_volume(const struct heif_image*, const struct heif_mastering_display_colour_volume* in);
+
+// Converts the internal numeric representation of heif_mastering_display_colour_volume to the
+// normalized values, collected in heif_decoded_mastering_display_colour_volume.
+// Values that are out-of-range are decoded to 0, indicating an undefined value (as specified in ISO/IEC 23008-2).
+LIBHEIF_API
+struct heif_error heif_mastering_display_colour_volume_decode(const struct heif_mastering_display_colour_volume* in,
+                                                              struct heif_decoded_mastering_display_colour_volume* out);
+
+LIBHEIF_API
+void heif_image_get_pixel_aspect_ratio(const struct heif_image*, uint32_t* aspect_h, uint32_t* aspect_v);
+
+LIBHEIF_API
+void heif_image_set_pixel_aspect_ratio(struct heif_image*, uint32_t aspect_h, uint32_t aspect_v);
+
 // ====================================================================================================
 //  Encoding API
 
@@ -1125,10 +1500,34 @@ struct heif_encoder_descriptor;
 // the parameters are provided.
 struct heif_encoder_parameter;
 
+struct heif_decoder_descriptor;
 
+// Get a list of available decoders. You can filter the encoders by compression format.
+// Use format_filter==heif_compression_undefined to get all available decoders.
+// The returned list of decoders is sorted by their priority (which is a plugin property).
+// The number of decoders is returned, which are not more than 'count' if (out_decoders != nullptr).
+// By setting out_decoders==nullptr, you can query the number of decoders, 'count' is ignored.
+LIBHEIF_API
+int heif_get_decoder_descriptors(enum heif_compression_format format_filter,
+                                 const struct heif_decoder_descriptor** out_decoders,
+                                 int count);
+
+// Return a long, descriptive name of the decoder (including version information).
+LIBHEIF_API
+const char* heif_decoder_descriptor_get_name(const struct heif_decoder_descriptor*);
+
+// Return a short, symbolic name for identifying the decoder.
+// This name should stay constant over different decoder versions.
+// Note: the returned ID may be NULL for old plugins that don't support this yet.
+LIBHEIF_API
+const char* heif_decoder_descriptor_get_id_name(const struct heif_decoder_descriptor*);
+
+// DEPRECATED: use heif_get_encoder_descriptors() instead.
 // Get a list of available encoders. You can filter the encoders by compression format and name.
 // Use format_filter==heif_compression_undefined and name_filter==NULL as wildcards.
 // The returned list of encoders is sorted by their priority (which is a plugin property).
+// The number of encoders is returned, which are not more than 'count' if (out_encoders != nullptr).
+// By setting out_encoders==nullptr, you can query the number of encoders, 'count' is ignored.
 // Note: to get the actual encoder from the descriptors returned here, use heif_context_get_encoder().
 LIBHEIF_API
 int heif_context_get_encoder_descriptors(struct heif_context*, // TODO: why do we need this parameter?
@@ -1136,6 +1535,18 @@ int heif_context_get_encoder_descriptors(struct heif_context*, // TODO: why do w
                                          const char* name_filter,
                                          const struct heif_encoder_descriptor** out_encoders,
                                          int count);
+
+// Get a list of available encoders. You can filter the encoders by compression format and name.
+// Use format_filter==heif_compression_undefined and name_filter==NULL as wildcards.
+// The returned list of encoders is sorted by their priority (which is a plugin property).
+// The number of encoders is returned, which are not more than 'count' if (out_encoders != nullptr).
+// By setting out_encoders==nullptr, you can query the number of encoders, 'count' is ignored.
+// Note: to get the actual encoder from the descriptors returned here, use heif_context_get_encoder().
+LIBHEIF_API
+int heif_get_encoder_descriptors(enum heif_compression_format format_filter,
+                                 const char* name_filter,
+                                 const struct heif_encoder_descriptor** out_encoders,
+                                 int count);
 
 // Return a long, descriptive name of the encoder (including version information).
 LIBHEIF_API
@@ -1333,6 +1744,20 @@ int heif_encoder_has_default(struct heif_encoder*,
                              const char* parameter_name);
 
 
+// The orientation values are defined equal to the EXIF Orientation tag.
+enum heif_orientation
+{
+  heif_orientation_normal = 1,
+  heif_orientation_flip_horizontally = 2,
+  heif_orientation_rotate_180 = 3,
+  heif_orientation_flip_vertically = 4,
+  heif_orientation_rotate_90_cw_then_flip_horizontally = 5,
+  heif_orientation_rotate_90_cw = 6,
+  heif_orientation_rotate_90_cw_then_flip_vertically = 7,
+  heif_orientation_rotate_270_cw = 8
+};
+
+
 struct heif_encoding_options
 {
   uint8_t version;
@@ -1343,9 +1768,7 @@ struct heif_encoding_options
 
   // version 2 options
 
-  // Crops heif images with a grid wrapper instead of a 'clap' transform.
-  // Results in slightly larger file size.
-  // Default: on.
+  // DEPRECATED. This option is not required anymore. Its value will be ignored.
   uint8_t macOS_compatibility_workaround;
 
   // version 3 options
@@ -1359,6 +1782,15 @@ struct heif_encoding_options
   struct heif_color_profile_nclx* output_nclx_profile;
 
   uint8_t macOS_compatibility_workaround_no_nclx_profile;
+
+  // version 5 options
+
+  // libheif will generate irot/imir boxes to match these orientations
+  enum heif_orientation image_orientation;
+
+  // version 6 options
+
+  struct heif_color_conversion_options color_conversion_options;
 };
 
 LIBHEIF_API
@@ -1400,6 +1832,13 @@ struct heif_error heif_context_encode_thumbnail(struct heif_context*,
                                                 int bbox_size,
                                                 struct heif_image_handle** out_thumb_image_handle);
 
+enum heif_metadata_compression
+{
+  heif_metadata_compression_off,
+  heif_metadata_compression_auto,
+  heif_metadata_compression_deflate
+};
+
 // Assign 'thumbnail_image' as the thumbnail image of 'master_image'.
 LIBHEIF_API
 struct heif_error heif_context_assign_thumbnail(struct heif_context*,
@@ -1418,10 +1857,17 @@ struct heif_error heif_context_add_XMP_metadata(struct heif_context*,
                                                 const struct heif_image_handle* image_handle,
                                                 const void* data, int size);
 
+// New version of heif_context_add_XMP_metadata() with data compression (experimental).
+LIBHEIF_API
+struct heif_error heif_context_add_XMP_metadata2(struct heif_context*,
+                                                 const struct heif_image_handle* image_handle,
+                                                 const void* data, int size,
+                                                 enum heif_metadata_compression compression);
+
 // Add generic, proprietary metadata to an image. You have to specify an 'item_type' that will
 // identify your metadata. 'content_type' can be an additional type, or it can be NULL.
 // For example, this function can be used to add IPTC metadata (IIM stream, not XMP) to an image.
-// Even not standard, we propose to store IPTC data with item type="iptc", content_type=NULL.
+// Although not standard, we propose to store IPTC data with item type="iptc", content_type=NULL.
 LIBHEIF_API
 struct heif_error heif_context_add_generic_metadata(struct heif_context* ctx,
                                                     const struct heif_image_handle* image_handle,
@@ -1457,6 +1903,14 @@ void heif_image_set_premultiplied_alpha(struct heif_image* image,
 LIBHEIF_API
 int heif_image_is_premultiplied_alpha(struct heif_image* image);
 
+// This function extends the padding of the image so that it has at least the given physical size.
+// The padding border is filled with the pixels along the right/bottom border.
+// This function may be useful if you want to process the image, but have some external padding requirements.
+// The image size will not be modified if it is already larger/equal than the given physical size.
+// I.e. you cannot assume that after calling this function, the stride will be equal to min_physical_width.
+LIBHEIF_API
+struct heif_error heif_image_extend_padding_to_size(struct heif_image* image, int min_physical_width, int min_physical_height);
+
 
 
 // --- register plugins
@@ -1474,8 +1928,6 @@ struct heif_error heif_register_decoder_plugin(const struct heif_decoder_plugin*
 LIBHEIF_API
 struct heif_error heif_register_encoder_plugin(const struct heif_encoder_plugin*);
 
-
-
 // DEPRECATED, typo in function name
 LIBHEIF_API
 int heif_encoder_descriptor_supportes_lossy_compression(const struct heif_encoder_descriptor*);
@@ -1484,6 +1936,839 @@ int heif_encoder_descriptor_supportes_lossy_compression(const struct heif_encode
 LIBHEIF_API
 int heif_encoder_descriptor_supportes_lossless_compression(const struct heif_encoder_descriptor*);
 
+
+// --- region items and annotations
+
+// See ISO/IEC 23008-12:2022 Section 6.10 "Region items and region annotations"
+
+struct heif_region_item;
+
+/**
+ * Region type.
+ *
+ * Each region item will contain zero or more regions, which may have different geometry or
+ * mask representations.
+*/
+enum heif_region_type
+{
+  /**
+   * Point gemetry.
+   *
+   * The region is represented by a single point.
+   */
+  heif_region_type_point = 0,
+
+  /**
+   * Rectangle geometry.
+   *
+   * The region is represented by a top left position, and a size defined
+   * by a width and height. All of the interior points and the edge are
+   * part of the region.
+   */
+  heif_region_type_rectangle = 1,
+
+  /**
+   * Ellipse geometry.
+   *
+   * The region is represented by a centre point, and radii in the X and
+   * Y directions. All of the interior points and the edge are part of the
+   * region.
+   */
+  heif_region_type_ellipse = 2,
+
+  /**
+   * Polygon geometry.
+   *
+   * The region is represented by a sequence of points, which is considered
+   * implicitly closed. All of the interior points and the edge are part
+   * of the region.
+   */
+  heif_region_type_polygon = 3,
+
+  /**
+   * Reference mask.
+   *
+   * The region geometry is described by the pixels in another image item,
+   * which has a item reference of type `mask` from the region item to the
+   * image item containing the mask.
+   *
+   * The image item containing the mask is one of:
+   *
+   * - a mask item (see ISO/IEC 23008-12:2022 Section 6.10.2), or a derived
+   * image from a mask item
+   *
+   * - an image item in monochrome format (4:0:0 chroma)
+   *
+   * - an image item in colour format with luma and chroma planes (e.g. 4:2:0)
+   *
+   * If the pixel value is equal to the minimum sample value (e.g. 0 for unsigned
+   * integer), the pixel is not part of the region. If the pixel value is equal
+   * to the maximum sample value (e.g. 255 for 8 bit unsigned integer), the pixel
+   * is part of the region. If the pixel value is between the minimum sample value
+   * and maximum sample value, the pixel value represents an (application defined)
+   * probability that the pixel is part of the region, where higher pixel values
+   * correspond to higher probability values.
+  */
+  heif_region_type_referenced_mask = 4,
+
+  /**
+   * Inline mask.
+   *
+   * The region geometry is described by a sequence of bits stored in inline
+   * in the region, one bit per pixel. If the bit value is `1`, the pixel is
+   * part of the region. If the bit value is `0`, the pixel is not part of the
+   * region.
+   */
+  heif_region_type_inline_mask = 5,
+
+  /**
+   * Polyline geometry.
+   *
+   * The region is represented by a sequence of points, which are not
+   * considered to form a closed surface. Only the edge is part of the region.
+  */
+  heif_region_type_polyline = 6
+};
+
+struct heif_region;
+
+/**
+ * Get the number of region items that are attached to an image.
+ *
+ * @param image_handle the image handle for the image to query.
+ * @return the number of region items, which can be zero.
+ */
+LIBHEIF_API
+int heif_image_handle_get_number_of_region_items(const struct heif_image_handle* image_handle);
+
+/**
+ * Get the region item identifiers for the region items attached to an image.
+ *
+ * Possible usage (in C++):
+ * @code
+ *  int numRegionItems = heif_image_handle_get_number_of_region_items(handle);
+ *  if (numRegionItems > 0) {
+ *      std::vector<heif_item_id> region_item_ids(numRegionItems);
+ *      heif_image_handle_get_list_of_region_item_ids(handle, region_item_ids.data(), numRegionItems);
+ *      // use region item ids
+ *  }
+ * @endcode
+ *
+ * @param image_handle the image handle for the parent image to query
+ * @param region_item_ids_array array to put the item identifiers into
+ * @param max_count the maximum number of region identifiers
+ * @return the number of region item identifiers that were returned.
+ */
+LIBHEIF_API
+int heif_image_handle_get_list_of_region_item_ids(const struct heif_image_handle* image_handle,
+                                                  heif_item_id* region_item_ids_array,
+                                                  int max_count);
+
+/**
+ * Get the region item.
+ *
+ * Caller is responsible for release of the output heif_region_item with heif_region_item_release().
+ *
+ * @param context the context to get the region item from, usually from a file operation
+ * @param region_item_id the identifier for the region item
+ * @param out pointer to pointer to the resulting region item
+ * @return heif_error_ok on success, or an error value indicating the problem
+ */
+LIBHEIF_API
+struct heif_error heif_context_get_region_item(const struct heif_context* context,
+                                               heif_item_id region_item_id,
+                                               struct heif_region_item** out);
+
+/**
+ * Get the item identifier for a region item.
+ *
+ * @param region_item the region item to query
+ * @return the region item identifier (or -1 if the region_item is null)
+ */
+LIBHEIF_API
+heif_item_id heif_region_item_get_id(struct heif_region_item* region_item);
+
+/**
+ * Release a region item.
+ *
+ * This should be called on items from heif_context_get_region_item().
+ *
+ * @param region_item the item to release.
+ */
+LIBHEIF_API
+void heif_region_item_release(struct heif_region_item* region_item);
+
+/**
+ * Get the reference size for a region item.
+ *
+ * The reference size specifies the coordinate space used for the region items.
+ * When the reference size does not match the image size, the regions need to be
+ * scaled to correspond.
+ *
+ * @param width the return value for the reference width (before any transformation)
+ * @param height the return value for the reference height (before any transformation)
+ */
+LIBHEIF_API
+void heif_region_item_get_reference_size(struct heif_region_item*, uint32_t* width, uint32_t* height);
+
+/**
+ * Get the number of regions within a region item.
+ *
+ * @param region_item the region item to query.
+ * @return the number of regions 
+*/
+LIBHEIF_API
+int heif_region_item_get_number_of_regions(const struct heif_region_item* region_item);
+
+/**
+ * Get the regions that are part of a region item.
+ *
+ * Caller is responsible for releasing the returned `heif_region` objects, using heif_region_release()
+ * on each region, or heif_region_release_many() on the returned array.
+ *
+ * Possible usage (in C++):
+ * @code
+ *  int num_regions = heif_image_handle_get_number_of_regions(region_item);
+ *  if (num_regions > 0) {
+ *      std::vector<heif_region*> regions(num_regions);
+ *      int n = heif_region_item_get_list_of_regions(region_item, regions.data(), (int)regions.size());
+ *      // use regions
+ *      heif_region_release_many(regions.data(), n);
+ *  }
+ * @endcode
+ *
+ * @param region_item the region_item to query
+ * @param out_regions_array array to put the region pointers into
+ * @param max_count the maximum number of regions, which needs to correspond to the size of the out_regions_array
+ * @return the number of regions that were returned.
+ */
+LIBHEIF_API
+int heif_region_item_get_list_of_regions(const struct heif_region_item* region_item,
+                                         struct heif_region** out_regions_array,
+                                         int max_count);
+
+/**
+ * Release a region.
+ *
+ * This should be called on regions from heif_region_item_get_list_of_regions().
+ *
+ * @param region the region to release.
+ *
+ * \sa heif_region_release_many() to release the whole list
+ */
+LIBHEIF_API
+void heif_region_release(const struct heif_region* region);
+
+/**
+ * Release a list of regions.
+ *
+ * This should be called on the list of regions from heif_region_item_get_list_of_regions().
+ *
+ * @param regions_array the regions to release.
+ * @param num the number of items in the array
+ *
+ * \sa heif_region_release() to release a single region
+ */
+LIBHEIF_API
+void heif_region_release_many(const struct heif_region* const* regions_array, int num);
+
+/**
+ * Get the region type for a specified region. 
+ *
+ * @param region the region to query
+ * @return the corresponding region type as an enumeration value
+ */
+LIBHEIF_API
+enum heif_region_type heif_region_get_type(const struct heif_region* region);
+
+// When querying the region geometry, there is a version without and a version with "_transformed" suffix.
+// The version without returns the coordinates in the reference coordinate space.
+// The version with "_transformed" suffix give the coordinates in pixels after all transformative properties have been applied.
+
+/**
+ * Get the values for a point region.
+ *
+ * This returns the coordinates in the reference coordinate space (from the parent region item).
+ *
+ * @param region the region to query, which must be of type #heif_region_type_point.
+ * @param x the X coordinate, where 0 is the left-most column.
+ * @param y the Y coordinate, where 0 is the top-most row.
+ * @return heif_error_ok on success, or an error value indicating the problem on failure
+ *
+ * \sa heif_region_get_point_transformed() for a version in pixels after all transformative properties have been applied.
+ */
+LIBHEIF_API
+struct heif_error heif_region_get_point(const struct heif_region* region, int32_t* x, int32_t* y);
+
+/**
+ * Get the transformed values for a point region.
+ *
+ * This returns the coordinates in pixels after all transformative properties have been applied.
+ *
+ * @param region the region to query, which must be of type #heif_region_type_point.
+ * @param x the X coordinate, where 0 is the left-most column.
+ * @param y the Y coordinate, where 0 is the top-most row.
+ * @param image_id the identifier for the image to transform / scale the region to
+ * @return heif_error_ok on success, or an error value indicating the problem on failure
+ *
+ * \sa heif_region_get_point() for a version that returns the values in the reference coordinate space.
+ */
+LIBHEIF_API
+struct heif_error heif_region_get_point_transformed(const struct heif_region* region, double* x, double* y,
+                                                    heif_item_id image_id);
+
+/**
+ * Get the values for a rectangle region.
+ *
+ * This returns the values in the reference coordinate space (from the parent region item).
+ * The rectangle is represented by a top left corner position, and a size defined
+ * by a width and height. All of the interior points and the edge are
+ * part of the region.
+ *
+ * @param region the region to query, which must be of type #heif_region_type_rectangle.
+ * @param x the X coordinate for the top left corner, where 0 is the left-most column.
+ * @param y the Y coordinate for the top left corner, where 0 is the top-most row.
+ * @param width the width of the rectangle
+ * @param height the height of the rectangle
+ * @return heif_error_ok on success, or an error value indicating the problem on failure
+ *
+ * \sa heif_region_get_rectangle_transformed() for a version in pixels after all transformative properties have been applied.
+ */
+LIBHEIF_API
+struct heif_error heif_region_get_rectangle(const struct heif_region* region,
+                                            int32_t* x, int32_t* y,
+                                            uint32_t* width, uint32_t* height);
+
+/**
+ * Get the transformed values for a rectangle region.
+ *
+ * This returns the coordinates in pixels after all transformative properties have been applied.
+ * The rectangle is represented by a top left corner position, and a size defined
+ * by a width and height. All of the interior points and the edge are
+ * part of the region.
+ *
+ * @param region the region to query, which must be of type #heif_region_type_rectangle.
+ * @param x the X coordinate for the top left corner, where 0 is the left-most column.
+ * @param y the Y coordinate for the top left corner, where 0 is the top-most row.
+ * @param width the width of the rectangle
+ * @param height the height of the rectangle
+ * @param image_id the identifier for the image to transform / scale the region to
+ * @return heif_error_ok on success, or an error value indicating the problem on failure
+ *
+ * \sa heif_region_get_rectangle() for a version that returns the values in the reference coordinate space.
+ */
+LIBHEIF_API
+struct heif_error heif_region_get_rectangle_transformed(const struct heif_region* region,
+                                                        double* x, double* y,
+                                                        double* width, double* height,
+                                                        heif_item_id image_id);
+
+/**
+ * Get the values for an ellipse region.
+ *
+ * This returns the values in the reference coordinate space (from the parent region item).
+ * The ellipse is represented by a centre position, and a size defined
+ * by radii in the X and Y directions. All of the interior points and the edge are
+ * part of the region.
+ *
+ * @param region the region to query, which must be of type #heif_region_type_ellipse.
+ * @param x the X coordinate for the centre point, where 0 is the left-most column.
+ * @param y the Y coordinate for the centre point, where 0 is the top-most row.
+ * @param radius_x the radius value in the X direction.
+ * @param radius_y the radius value in the Y direction
+ * @return heif_error_ok on success, or an error value indicating the problem on failure
+ *
+ * \sa heif_region_get_ellipse_transformed() for a version in pixels after all transformative properties have been applied.
+ */
+LIBHEIF_API
+struct heif_error heif_region_get_ellipse(const struct heif_region* region,
+                                          int32_t* x, int32_t* y,
+                                          uint32_t* radius_x, uint32_t* radius_y);
+
+
+/**
+ * Get the transformed values for an ellipse region.
+ *
+ * This returns the coordinates in pixels after all transformative properties have been applied.
+ * The ellipse is represented by a centre position, and a size defined
+ * by radii in the X and Y directions. All of the interior points and the edge are
+ * part of the region.
+ *
+ * @param region the region to query, which must be of type #heif_region_type_ellipse.
+ * @param x the X coordinate for the centre point, where 0 is the left-most column.
+ * @param y the Y coordinate for the centre point, where 0 is the top-most row.
+ * @param radius_x the radius value in the X direction.
+ * @param radius_y the radius value in the Y direction
+ * @param image_id the identifier for the image to transform / scale the region to
+ * @return heif_error_ok on success, or an error value indicating the problem on failure
+ *
+ * \sa heif_region_get_ellipse() for a version that returns the values in the reference coordinate space.
+ */
+LIBHEIF_API
+struct heif_error heif_region_get_ellipse_transformed(const struct heif_region* region,
+                                                      double* x, double* y,
+                                                      double* radius_x, double* radius_y,
+                                                      heif_item_id image_id);
+
+/**
+ * Get the number of points in a polygon.
+ *
+ * @param region the region to query, which must be of type #heif_region_type_polygon
+ * @return the number of points, or -1 on error.
+ */
+LIBHEIF_API
+int heif_region_get_polygon_num_points(const struct heif_region* region);
+
+/**
+ * Get the points in a polygon region.
+ *
+ * This returns the values in the reference coordinate space (from the parent region item).
+ *
+ * A polygon is a sequence of points that form a closed shape. The first point does
+ * not need to be repeated as the last point. All of the interior points and the edge are
+ * part of the region.
+ * The points are returned as pairs of X,Y coordinates, in the order X<sub>1</sub>,
+ * Y<sub>1</sub>, X<sub>2</sub>, Y<sub>2</sub>, ..., X<sub>n</sub>, Y<sub>n</sub>.
+ *
+ * @param region the region to equery, which must be of type #heif_region_type_polygon
+ * @param out_pts_array the array to return the points in, which must have twice as many entries as there are points
+ * in the polygon.
+ * @return heif_error_ok on success, or an error value indicating the problem on failure
+ *
+ * \sa heif_region_get_polygon_points_transformed() for a version in pixels after all transformative properties have been applied.
+ */
+LIBHEIF_API
+struct heif_error heif_region_get_polygon_points(const struct heif_region* region,
+                                                 int32_t* out_pts_array);
+
+/**
+ * Get the transformed points in a polygon region.
+ *
+ * This returns the coordinates in pixels after all transformative properties have been applied.
+ *
+ * A polygon is a sequence of points that form a closed shape. The first point does
+ * not need to be repeated as the last point. All of the interior points and the edge are
+ * part of the region.
+ * The points are returned as pairs of X,Y coordinates, in the order X<sub>1</sub>,
+ * Y<sub>1</sub>, X<sub>2</sub>, Y<sub>2</sub>, ..., X<sub>n</sub>, Y<sub>n</sub>.
+ *
+ * @param region the region to equery, which must be of type #heif_region_type_polygon
+ * @param out_pts_array the array to return the points in, which must have twice as many entries as there are points
+ * in the polygon.
+ * @param image_id the identifier for the image to transform / scale the region to
+ * @return heif_error_ok on success, or an error value indicating the problem on failure
+ *
+ * \sa heif_region_get_polygon_points() for a version that returns the values in the reference coordinate space.
+ */
+LIBHEIF_API
+struct heif_error heif_region_get_polygon_points_transformed(const struct heif_region* region,
+                                                             double* out_pts_array,
+                                                             heif_item_id image_id);
+/**
+ * Get the number of points in a polyline.
+ *
+ * @param region the region to query, which must be of type #heif_region_type_polyline
+ * @return the number of points, or -1 on error.
+ */
+LIBHEIF_API
+int heif_region_get_polyline_num_points(const struct heif_region* region);
+
+/**
+ * Get the points in a polyline region.
+ *
+ * This returns the values in the reference coordinate space (from the parent region item).
+ *
+ * A polyline is a sequence of points that does not form a closed shape. Even if the
+ * polyline is closed, the only points that are part of the region are those that 
+ * intersect (even minimally) a one-pixel line drawn along the polyline.
+ * The points are provided as pairs of X,Y coordinates, in the order X<sub>1</sub>,
+ * Y<sub>1</sub>, X<sub>2</sub>, Y<sub>2</sub>, ..., X<sub>n</sub>, Y<sub>n</sub>.
+ *
+ * Possible usage (in C++):
+ * @code
+ * int num_polyline_points = heif_region_get_polyline_num_points(region);
+ * if (num_polyline_points > 0) {
+ *     std::vector<int32_t> polyline(num_polyline_points * 2);
+ *     heif_region_get_polyline_points(region, polyline.data());
+ *     // do something with points ...
+ * }
+ * @endcode
+ *
+ * @param region the region to equery, which must be of type #heif_region_type_polyline
+ * @param out_pts_array the array to return the points in, which must have twice as many entries as there are points
+ * in the polyline.
+ * @return heif_error_ok on success, or an error value indicating the problem on failure
+ *
+ * \sa heif_region_get_polyline_points_transformed() for a version in pixels after all transformative properties have been applied.
+ */
+LIBHEIF_API
+struct heif_error heif_region_get_polyline_points(const struct heif_region* region,
+                                                  int32_t* out_pts_array);
+
+/**
+ * Get the transformed points in a polyline region.
+ *
+ * This returns the coordinates in pixels after all transformative properties have been applied.
+ *
+ * A polyline is a sequence of points that does not form a closed shape. Even if the
+ * polyline is closed, the only points that are part of the region are those that 
+ * intersect (even minimally) a one-pixel line drawn along the polyline.
+ * The points are provided as pairs of X,Y coordinates, in the order X<sub>1</sub>,
+ * Y<sub>1</sub>, X<sub>2</sub>, Y<sub>2</sub>, ..., X<sub>n</sub>, Y<sub>n</sub>.
+ *
+ * @param region the region to equery, which must be of type #heif_region_type_polyline
+ * @param out_pts_array the array to return the points in, which must have twice as many entries as there are points
+ * in the polyline.
+ * @param image_id the identifier for the image to transform / scale the region to
+ * @return heif_error_ok on success, or an error value indicating the problem on failure
+ *
+ * \sa heif_region_get_polyline_points() for a version that returns the values in the reference coordinate space.
+ */
+LIBHEIF_API
+struct heif_error heif_region_get_polyline_points_transformed(const struct heif_region* region,
+                                                              double* out_pts_array,
+                                                              heif_item_id image_id);
+
+/**
+ * Get a referenced item mask region.
+ *
+ * This returns the values in the reference coordinate space (from the parent region item).
+ * The mask location is represented by a top left corner position, and a size defined
+ * by a width and height. The value of each sample in that mask identifies whether the
+ * corresponding pixel is part of the region.
+ *
+ * The mask is provided as an image in another item. The image item containing the mask
+ * is one of:
+ *
+ * - a mask item (see ISO/IEC 23008-12:2022 Section 6.10.2), or a derived
+ * image from a mask item
+ *
+ * - an image item in monochrome format (4:0:0 chroma)
+ *
+ * - an image item in colour format with luma and chroma planes (e.g. 4:2:0)
+ *
+ * If the pixel value is equal to the minimum sample value (e.g. 0 for unsigned
+ * integer), the pixel is not part of the region. If the pixel value is equal
+ * to the maximum sample value (e.g. 255 for 8 bit unsigned integer), the pixel
+ * is part of the region. If the pixel value is between the minimum sample value
+ * and maximum sample value, the pixel value represents an (application defined)
+ * probability that the pixel is part of the region, where higher pixel values
+ * correspond to higher probability values.
+ *
+ * @param region the region to query, which must be of type #heif_region_type_referenced_mask.
+ * @param x the X coordinate for the top left corner, where 0 is the left-most column.
+ * @param y the Y coordinate for the top left corner, where 0 is the top-most row.
+ * @param width the width of the mask region
+ * @param height the height of the mask region
+ * @param mask_item_id the item identifier for the image that provides the mask.
+ * @return heif_error_ok on success, or an error value indicating the problem on failure
+ */
+LIBHEIF_API
+struct heif_error heif_region_get_referenced_mask_ID(const struct heif_region* region,
+                                                     int32_t* x, int32_t* y,
+                                                     uint32_t* width, uint32_t* height,
+                                                     heif_item_id *mask_item_id);
+
+/**
+ * Get the length of the data in an inline mask region.
+ *
+ * @param region the region to query, which must be of type #heif_region_type_inline_mask.
+ * @return the number of bytes in the mask data, or 0 on error.
+ */
+LIBHEIF_API
+unsigned long heif_region_get_inline_mask_data_len(const struct heif_region* region);
+
+
+/**
+ * Get data for an inline mask region.
+ *
+ * This returns the values in the reference coordinate space (from the parent region item).
+ * The mask location is represented by a top left corner position, and a size defined
+ * by a width and height.
+ *
+ * The mask is held as inline data on the region, one bit per pixel, most significant 
+ * bit first pixel, no padding. If the bit value is `1`, the corresponding pixel is
+ * part of the region. If the bit value is `0`, the corresponding pixel is not part of the
+ * region.
+ *
+ * Possible usage (in C++):
+ * @code
+ * long unsigned int data_len = heif_region_get_inline_mask_data_len(region);
+ * int32_t x, y;
+ * uint32_t width, height;
+ * std::vector<uint8_t> mask_data(data_len);
+ * err = heif_region_get_inline_mask(region, &x, &y, &width, &height, mask_data.data());
+ * @endcode
+ *
+ * @param region the region to query, which must be of type #heif_region_type_inline_mask.
+ * @param x the X coordinate for the top left corner, where 0 is the left-most column.
+ * @param y the Y coordinate for the top left corner, where 0 is the top-most row.
+ * @param width the width of the mask region
+ * @param height the height of the mask region
+ * @param mask_data the location to return the mask data
+ * @return heif_error_ok on success, or an error value indicating the problem on failure
+ */
+LIBHEIF_API
+struct heif_error heif_region_get_inline_mask_data(const struct heif_region* region,
+                                                   int32_t* x, int32_t* y,
+                                                   uint32_t* width, uint32_t* height,
+                                                   uint8_t* mask_data);
+
+/**
+ * Get a mask region image.
+ *
+ * This returns the values in the reference coordinate space (from the parent region item).
+ * The mask location is represented by a top left corner position, and a size defined
+ * by a width and height.
+ *
+ * This function works when the passed region is either a heif_region_type_referenced_mask or
+ * a heif_region_type_inline_mask.
+ * The returned image is a monochrome image where each pixel represents the (scaled) probability
+ * of the pixel being part of the mask.
+ *
+ * If the region type is an inline mask, which always holds a binary mask, this function
+ * converts the binary inline mask to an 8-bit monochrome image with the values '0' and '255'.
+ * The pixel value is set to `255` where the pixel is part of the region, and `0` where the
+ * pixel is not part of the region.
+ *
+ * @param region the region to query, which must be of type #heif_region_type_inline_mask.
+ * @param x the X coordinate for the top left corner, where 0 is the left-most column.
+ * @param y the Y coordinate for the top left corner, where 0 is the top-most row.
+ * @param width the width of the mask region
+ * @param height the height of the mask region
+ * @param mask_image the returned mask image
+ * @return heif_error_ok on success, or an error value indicating the problem on failure
+ *
+ * \note the caller is responsible for releasing the mask image
+ */
+LIBHEIF_API
+struct heif_error heif_region_get_mask_image(const struct heif_region* region,
+                                             int32_t* x, int32_t* y,
+                                             uint32_t* width, uint32_t* height,
+                                             struct heif_image** mask_image);
+
+// --- adding region items
+
+/**
+ * Add a region item to an image.
+ *
+ * The region item is a collection of regions (point, polyline, polygon, rectangle, ellipse or mask)
+ * along with a reference size (width and height) that forms the coordinate basis for the regions.
+ *
+ * The concept is to add the region item, then add one or more regions to the region item.
+ *
+ * @param image_handle the image to attach the region item to.
+ * @param reference_width the width of the reference size.
+ * @param reference_height the height of the reference size.
+ * @param out_region_item the resulting region item
+ * @return heif_error_ok on success, or an error indicating the problem on failure
+*/
+LIBHEIF_API
+struct heif_error heif_image_handle_add_region_item(struct heif_image_handle* image_handle,
+                                                    uint32_t reference_width, uint32_t reference_height,
+                                                    struct heif_region_item** out_region_item);
+
+/**
+ * Add a point region to the region item.
+ *
+ * @param region_item the region item that holds this point region
+ * @param x the x value for the point location
+ * @param y the y value for the point location
+ * @param out_region pointer to pointer to the returned region (optional, see below)
+ * @return heif_error_ok on success, or an error indicating the problem on failure
+ *
+ * @note The `out_region` parameter is optional, and can be set to `NULL` if not needed.
+ */
+LIBHEIF_API
+struct heif_error heif_region_item_add_region_point(struct heif_region_item* region_item,
+                                                    int32_t x, int32_t y,
+                                                    struct heif_region** out_region);
+
+/**
+ * Add a rectangle region to the region item.
+ *
+ * @param region_item the region item that holds this rectangle region
+ * @param x the x value for the top-left corner of this rectangle region
+ * @param y the y value for the top-left corner of this rectangle region
+ * @param width the width of this rectangle region
+ * @param height the height of this rectangle region
+ * @param out_region pointer to pointer to the returned region (optional, see below)
+ * @return heif_error_ok on success, or an error indicating the problem on failure
+ *
+ * @note The `out_region` parameter is optional, and can be set to `NULL` if not needed.
+ */
+LIBHEIF_API
+struct heif_error heif_region_item_add_region_rectangle(struct heif_region_item* region_item,
+                                                        int32_t x, int32_t y,
+                                                        uint32_t width, uint32_t height,
+                                                        struct heif_region** out_region);
+
+/**
+ * Add a ellipse region to the region item.
+ *
+ * @param region_item the region item that holds this ellipse region
+ * @param x the x value for the centre of this ellipse region
+ * @param y the y value for the centre of this ellipse region
+ * @param radius_x the radius of the ellipse in the X (horizontal) direction
+ * @param radius_y the radius of the ellipse in the Y (vertical) direction
+ * @param out_region pointer to pointer to the returned region (optional, see below)
+ * @return heif_error_ok on success, or an error indicating the problem on failure
+ *
+ * @note The `out_region` parameter is optional, and can be set to `NULL` if not needed.
+ */
+LIBHEIF_API
+struct heif_error heif_region_item_add_region_ellipse(struct heif_region_item* region_item,
+                                                      int32_t x, int32_t y,
+                                                      uint32_t radius_x, uint32_t radius_y,
+                                                      struct heif_region** out_region);
+
+/**
+ * Add a polygon region to the region item.
+ *
+ * A polygon is a sequence of points that form a closed shape. The first point does
+ * not need to be repeated as the last point.
+ * The points are provided as pairs of X,Y coordinates, in the order X<sub>1</sub>,
+ * Y<sub>1</sub>, X<sub>2</sub>, Y<sub>2</sub>, ..., X<sub>n</sub>, Y<sub>n</sub>.
+ *
+ * @param region_item the region item that holds this polygon region
+ * @param pts_array the array of points in X,Y order (see above)
+ * @param nPoints the number of points
+ * @param out_region pointer to pointer to the returned region (optional, see below)
+ * @return heif_error_ok on success, or an error indicating the problem on failure
+ *
+ * @note `nPoints` is the number of points, not the number of elements in the array
+ * @note The `out_region` parameter is optional, and can be set to `NULL` if not needed.
+ */
+LIBHEIF_API
+struct heif_error heif_region_item_add_region_polygon(struct heif_region_item* region_item,
+                                                      const int32_t* pts_array, int nPoints,
+                                                      struct heif_region** out_region);
+
+/**
+ * Add a polyline region to the region item.
+ *
+ * A polyline is a sequence of points that does not form a closed shape. Even if the
+ * polyline is closed, the only points that are part of the region are those that 
+ * intersect (even minimally) a one-pixel line drawn along the polyline.
+ * The points are provided as pairs of X,Y coordinates, in the order X<sub>1</sub>,
+ * Y<sub>1</sub>, X<sub>2</sub>, Y<sub>2</sub>, ..., X<sub>n</sub>, Y<sub>n</sub>.
+ *
+ * @param region_item the region item that holds this polyline region
+ * @param pts_array the array of points in X,Y order (see above)
+ * @param nPoints the number of points
+ * @param out_region pointer to pointer to the returned region (optional, see below)
+ * @return heif_error_ok on success, or an error indicating the problem on failure
+ *
+ * @note `nPoints` is the number of points, not the number of elements in the array
+ * @note The `out_region` parameter is optional, and can be set to `NULL` if not needed.
+ */
+LIBHEIF_API
+struct heif_error heif_region_item_add_region_polyline(struct heif_region_item* region_item,
+                                                       const int32_t* pts_array, int nPoints,
+                                                       struct heif_region** out_region);
+
+
+/**
+ * Add a referenced mask region to the region item.
+ *
+ * The region geometry is described by the pixels in another image item,
+ * which has a item reference of type `mask` from the region item to the
+ * image item containing the mask.
+ *
+ * The image item containing the mask is one of:
+ *
+ * - a mask item (see ISO/IEC 23008-12:2022 Section 6.10.2), or a derived
+ * image from a mask item
+ *
+ * - an image item in monochrome format (4:0:0 chroma)
+ *
+ * - an image item in colour format with luma and chroma planes (e.g. 4:2:0)
+ *
+ * If the pixel value is equal to the minimum sample value (e.g. 0 for unsigned
+ * integer), the pixel is not part of the region. If the pixel value is equal
+ * to the maximum sample value (e.g. 255 for 8 bit unsigned integer), the pixel
+ * is part of the region. If the pixel value is between the minimum sample value
+ * and maximum sample value, the pixel value represents an (application defined)
+ * probability that the pixel is part of the region, where higher pixel values
+ * correspond to higher probability values.
+ *
+ * @param region_item the region item that holds this mask region
+ * @param x the x value for the top-left corner of this mask region
+ * @param y the y value for the top-left corner of this mask region
+ * @param width the width of this mask region
+ * @param height the height of this mask region
+ * @param mask_item_id the item identifier for the mask that is referenced
+ * @param out_region pointer to pointer to the returned region (optional, see below)
+ * @return heif_error_ok on success, or an error indicating the problem on failure
+ *
+ * @note The `out_region` parameter is optional, and can be set to `NULL` if not needed.
+ */
+LIBHEIF_API
+struct heif_error heif_region_item_add_region_referenced_mask(struct heif_region_item* region_item,
+                                                              int32_t x, int32_t y,
+                                                              uint32_t width, uint32_t height,
+                                                              heif_item_id mask_item_id,
+                                                              struct heif_region** out_region);
+
+
+/**
+ * Add an inline mask region to the region item.
+ *
+ * The region geometry is described by a top left corner position, and a size defined
+ * by a width and height.
+ *
+ * The mask is held as inline data on the region, one bit per pixel, most significant 
+ * bit first pixel, no padding. If the bit value is `1`, the corresponding pixel is
+ * part of the region. If the bit value is `0`, the corresponding pixel is not part of the
+ * region.
+ *
+ * @param region_item the region item that holds this mask region
+ * @param x the x value for the top-left corner of this mask region
+ * @param y the y value for the top-left corner of this mask region
+ * @param width the width of this mask region
+ * @param height the height of this mask region
+ * @param mask_data the location to return the mask data
+ * @param mask_data_len the length of the mask data, in bytes
+ * @param out_region pointer to pointer to the returned region (optional, see below)
+ * @return heif_error_ok on success, or an error value indicating the problem on failure
+ */
+ LIBHEIF_API
+struct heif_error heif_region_item_add_region_inline_mask_data(struct heif_region_item* region_item,
+                                                               int32_t x, int32_t y,
+                                                               uint32_t width, uint32_t height,
+                                                               uint8_t* mask_data,
+                                                               unsigned long mask_data_len,
+                                                               struct heif_region** out_region);
+
+/**
+ * Add an inline mask region image to the region item.
+ *
+ * The region geometry is described by a top left corner position, and a size defined
+ * by a width and height.
+ *
+ * The mask data is held as inline data on the region, one bit per pixel. The provided
+ * image is converted to inline data, where any non-zero pixel becomes part of the
+ * mask region. If the image width is less that the specified width, it is expanded
+ * to match the width of the region (zero fill on the right). If the image height is
+ * less than the specified height, it is expanded to match the height of the region
+ * (zero fill on the bottom). If the image width or height is greater than the 
+ * width or height (correspondingly) of the region, the image is cropped.
+ *
+ * @param region_item the region item that holds this mask region
+ * @param x the x value for the top-left corner of this mask region
+ * @param y the y value for the top-left corner of this mask region
+ * @param width the width of this mask region
+ * @param height the height of this mask region
+ * @param image the image to convert to an inline mask
+ * @param out_region pointer to pointer to the returned region (optional, see below)
+ * @return heif_error_ok on success, or an error value indicating the problem on failure
+ */
+ LIBHEIF_API
+struct heif_error heif_region_item_add_region_inline_mask(struct heif_region_item* region_item,
+                                                          int32_t x, int32_t y,
+                                                          uint32_t width, uint32_t height,
+                                                          struct heif_image* image,
+                                                          struct heif_region** out_region);
 #ifdef __cplusplus
 }
 #endif

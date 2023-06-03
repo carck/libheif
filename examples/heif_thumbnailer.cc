@@ -40,6 +40,8 @@
 
 #if HAVE_LIBPNG
 #  include "encoder_png.h"
+#include "common.h"
+
 #endif
 
 #if defined(_MSC_VER)
@@ -55,13 +57,23 @@ static int usage(const char* command)
 }
 
 
+class LibHeifInitializer {
+public:
+  LibHeifInitializer() { heif_init(nullptr); }
+  ~LibHeifInitializer() { heif_deinit(); }
+};
+
+
 int main(int argc, char** argv)
 {
+  // This takes care of initializing libheif and also deinitializing it at the end to free all resources.
+  LibHeifInitializer initializer;
+
   int opt;
   int size = 512; // default thumbnail size
   bool thumbnail_from_primary_image_only = false;
 
-  while ((opt = getopt(argc, argv, "s:hp")) != -1) {
+  while ((opt = getopt(argc, argv, "s:hpv")) != -1) {
     switch (opt) {
       case 's':
         size = atoi(optarg);
@@ -69,6 +81,9 @@ int main(int argc, char** argv)
       case 'p':
         thumbnail_from_primary_image_only = true;
         break;
+      case 'v':
+        show_version();
+        return 0;
       case 'h':
       default:
         return usage(argv[0]);

@@ -60,8 +60,9 @@
 #endif
 
 #include "encoder_y4m.h"
+#include "common.h"
 
-#if defined(__MINGW32__)  || defined(__MINGW64__) || defined(_MSC_VER)
+#if defined(_MSC_VER)
 #include "getopt.h"
 #endif
 
@@ -74,14 +75,22 @@ static void show_help(const char* argv0)
                "Usage: heif-convert [options]  <input-image> <output-image>\n"
                "\n"
                "The program determines the output file format from the output filename suffix.\n"
-               "These suffices are recognized: jpg, jpeg, png, y4m."
+               "These suffixes are recognized: jpg, jpeg, png, y4m."
                "\n"
                "Options:\n"
-               "  -h, --help      show help\n"
-               "  -q, --quality   quality (for JPEG output)\n"
-               "      --with-aux  also write auxiliary images (e.g. depth images)\n"
-               "      --no-colons replace ':' characters in auxiliary image filenames with '_'\n"
-               "      --quiet     do not output status messages to console\n";
+               "  -h, --help                     show help\n"
+               "  -v, --version                  show version\n"
+               "  -q, --quality                  quality (for JPEG output)\n"
+               "  -d, --decoder ID               use a specific decoder (see --list-decoders)\n"
+               "      --with-aux                 also write auxiliary images (e.g. depth images)\n"
+               "      --with-xmp                 write XMP metadata to file (output filename with .xmp suffix)\n"
+               "      --with-exif                write EXIF metadata to file (output filename with .exif suffix)\n"
+               "      --skip-exif-offset         skip EXIF metadata offset bytes\n"
+               "      --no-colons                replace ':' characters in auxiliary image filenames with '_'\n"
+               "      --list-decoders            list all available decoders (built-in and plugins)\n"
+               "      --quiet                    do not output status messages to console\n"
+               "  -C, --chroma-upsampling ALGO   Force chroma upsampling algorithm (nn = nearest-neighbor / bilinear)\n"
+               "      --png-compression-level #  Set to integer between 0 (fastest) and 9 (best). Use -1 for default.\n";
 }
 
 
@@ -104,26 +113,120 @@ private:
 int option_quiet = 0;
 int option_aux = 0;
 int option_no_colons = 0;
+int option_with_xmp = 0;
+int option_with_exif = 0;
+int option_skip_exif_offset = 0;
+int option_list_decoders = 0;
+int option_png_compression_level = -1; // use zlib default
+
+std::string chroma_upsampling;
+
+#define OPTION_PNG_COMPRESSION_LEVEL 1000
+
 
 static struct option long_options[] = {
-    {(char* const) "quality",   required_argument, 0,                 'q'},
-    {(char* const) "strict",    no_argument,       0,                 's'},
-    {(char* const) "quiet",     no_argument,       &option_quiet,     1},
-    {(char* const) "with-aux",  no_argument,       &option_aux,       1},
-    {(char* const) "no-colons", no_argument,       &option_no_colons, 1},
-    {(char* const) "help",      no_argument,       0,                 'h'}
+    {(char* const) "quality",          required_argument, 0,                        'q'},
+    {(char* const) "strict",           no_argument,       0,                        's'},
+    {(char* const) "decoder",          required_argument, 0,                        'd'},
+    {(char* const) "quiet",            no_argument,       &option_quiet,            1},
+    {(char* const) "with-aux",         no_argument,       &option_aux,              1},
+    {(char* const) "with-xmp",         no_argument,       &option_with_xmp,         1},
+    {(char* const) "with-exif",        no_argument,       &option_with_exif,        1},
+    {(char* const) "skip-exif-offset", no_argument,       &option_skip_exif_offset, 1},
+    {(char* const) "no-colons",        no_argument,       &option_no_colons,        1},
+    {(char* const) "list-decoders",    no_argument,       &option_list_decoders,    1},
+    {(char* const) "help",             no_argument,       0,                        'h'},
+    {(char* const) "chroma-upsampling", required_argument, 0,                     'C'},
+    {(char* const) "png-compression-level", required_argument, 0,  OPTION_PNG_COMPRESSION_LEVEL},
+    {(char* const) "version",          no_argument,       0,                        'v'}
 };
+
+
+#define MAX_DECODERS 20
+
+void list_decoders(heif_compression_format format)
+{
+  const heif_decoder_descriptor* decoders[MAX_DECODERS];
+  int n = heif_get_decoder_descriptors(format, decoders, MAX_DECODERS);
+
+  for (int i=0;i<n;i++) {
+    const char* id = heif_decoder_descriptor_get_id_name(decoders[i]);
+    if (id==nullptr) {
+      id = "---";
+    }
+
+    std::cout << "- " << id << " = " << heif_decoder_descriptor_get_name(decoders[i]) << "\n";
+  }
+}
+
+
+void list_all_decoders()
+{
+  std::cout << "HEIC decoders:\n";
+  list_decoders(heif_compression_HEVC);
+
+  std::cout << "AVIF decoders:\n";
+  list_decoders(heif_compression_AV1);
+
+  std::cout << "JPEG decoders:\n";
+  list_decoders(heif_compression_JPEG);
+
+#if WITH_UNCOMPRESSED_CODEC
+  std::cout << "uncompressed: yes\n";
+#else
+  std::cout << "uncompressed: no\n";
+#endif
+}
+
+
+bool is_integer_string(const char* s)
+{
+  if (strlen(s)==0) {
+    return false;
+  }
+
+  if (!(isdigit(s[0]) || s[0]=='-')) {
+    return false;
+  }
+
+  for (size_t i=strlen(s)-1; i>=1 ; i--) {
+    if (!isdigit(s[i])) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+
+void show_png_compression_level_usage_warning()
+{
+  fprintf(stderr, "Invalid PNG compression level. Has to be between 0 (fastest) and 9 (best).\n"
+                  "You can also use -1 to use the default compression level.\n");
+}
+
+
+class LibHeifInitializer {
+public:
+  LibHeifInitializer() { heif_init(nullptr); }
+  ~LibHeifInitializer() { heif_deinit(); }
+};
+
 
 int main(int argc, char** argv)
 {
+  // This takes care of initializing libheif and also deinitializing it at the end to free all resources.
+  LibHeifInitializer initializer;
+
   int quality = -1;  // Use default quality.
   bool strict_decoding = false;
+  const char* decoder_id = nullptr;
 
   UNUSED(quality);  // The quality will only be used by encoders that support it.
   //while ((opt = getopt(argc, argv, "q:s")) != -1) {
   while (true) {
     int option_index = 0;
-    int c = getopt_long(argc, argv, "q:s", long_options, &option_index);
+    int c = getopt_long(argc, argv, "hq:sd:C:v", long_options, &option_index);
     if (c == -1) {
       break;
     }
@@ -132,16 +235,50 @@ int main(int argc, char** argv)
       case 'q':
         quality = atoi(optarg);
         break;
+      case 'd':
+        decoder_id = optarg;
+        break;
       case 's':
         strict_decoding = true;
         break;
       case '?':
         std::cerr << "\n";
-        // falltrough
+        // fallthrough
       case 'h':
         show_help(argv[0]);
         return 0;
+      case 'C':
+        chroma_upsampling = optarg;
+        if (chroma_upsampling != "nn" &&
+            chroma_upsampling != "nearest-neighbor" &&
+            chroma_upsampling != "bilinear") {
+          fprintf(stderr, "Undefined chroma upsampling algorithm.\n");
+          exit(5);
+        }
+        if (chroma_upsampling == "nn") { // abbreviation
+          chroma_upsampling = "nearest-neighbor";
+        }
+        break;
+      case OPTION_PNG_COMPRESSION_LEVEL:
+        if (!is_integer_string(optarg)) {
+          show_png_compression_level_usage_warning();
+          exit(5);
+        }
+        option_png_compression_level = std::stoi(optarg);
+        if (option_png_compression_level < -1 || option_png_compression_level > 9) {
+          show_png_compression_level_usage_warning();
+          exit(5);
+        }
+        break;
+      case 'v':
+        show_version();
+        return 0;
     }
+  }
+
+  if (option_list_decoders) {
+    list_all_decoders();
+    return 0;
   }
 
   if (optind + 2 > argc) {
@@ -152,15 +289,20 @@ int main(int argc, char** argv)
 
   std::string input_filename(argv[optind++]);
   std::string output_filename(argv[optind++]);
+  std::string output_filename_stem;
+  std::string output_filename_suffix;
 
   std::unique_ptr<Encoder> encoder;
 
   size_t dot_pos = output_filename.rfind('.');
   if (dot_pos != std::string::npos) {
+    output_filename_stem = output_filename.substr(0,dot_pos);
     std::string suffix_lowercase = output_filename.substr(dot_pos + 1);
 
     std::transform(suffix_lowercase.begin(), suffix_lowercase.end(),
                    suffix_lowercase.begin(), ::tolower);
+
+    output_filename_suffix = suffix_lowercase;
 
     if (suffix_lowercase == "jpg" || suffix_lowercase == "jpeg") {
 #if HAVE_LIBJPEG
@@ -177,7 +319,9 @@ int main(int argc, char** argv)
 
     if (suffix_lowercase == "png") {
 #if HAVE_LIBPNG
-      encoder.reset(new PngEncoder());
+      auto pngEncoder = new PngEncoder();
+      pngEncoder->set_compression_level(option_png_compression_level);
+      encoder.reset(pngEncoder);
 #else
       fprintf(stderr, "PNG support has not been compiled in.\n");
       return 1;
@@ -187,6 +331,10 @@ int main(int argc, char** argv)
     if (suffix_lowercase == "y4m") {
       encoder.reset(new Y4MEncoder());
     }
+  }
+  else {
+    output_filename_stem = output_filename;
+    output_filename_suffix = "jpg";
   }
 
   if (!encoder) {
@@ -204,6 +352,12 @@ int main(int argc, char** argv)
   std::ifstream istr(input_filename.c_str(), std::ios_base::binary);
   uint8_t magic[12];
   istr.read((char*) magic, 12);
+
+  if (heif_check_jpeg_filetype(magic, 12)) {
+    fprintf(stderr, "Input file '%s' is a JPEG image\n", input_filename.c_str());
+    return 1;
+  }
+
   enum heif_filetype_result filetype_check = heif_check_filetype(magic, 12);
   if (filetype_check == heif_filetype_no) {
     fprintf(stderr, "Input file is not an HEIF/AVIF file\n");
@@ -252,15 +406,20 @@ int main(int argc, char** argv)
 
   for (int idx = 0; idx < num_images; ++idx) {
 
+    std::string numbered_output_filename_stem;
+
     if (num_images > 1) {
       std::ostringstream s;
-      s << output_filename.substr(0, output_filename.find_last_of('.'));
+      s << output_filename_stem;
       s << "-" << image_index;
-      s << output_filename.substr(output_filename.find_last_of('.'));
+      numbered_output_filename_stem = s.str();
+
+      s << "." << output_filename_suffix;
       filename.assign(s.str());
     }
     else {
       filename.assign(output_filename);
+      numbered_output_filename_stem = output_filename_stem;
     }
 
     struct heif_image_handle* handle;
@@ -276,6 +435,16 @@ int main(int argc, char** argv)
     encoder->UpdateDecodingOptions(handle, decode_options);
 
     decode_options->strict_decoding = strict_decoding;
+    decode_options->decoder_id = decoder_id;
+
+    if (chroma_upsampling=="nearest-neighbor") {
+      decode_options->color_conversion_options.preferred_chroma_upsampling_algorithm = heif_chroma_upsampling_nearest_neighbor;
+      decode_options->color_conversion_options.only_use_preferred_chroma_algorithm = true;
+    }
+    else if (chroma_upsampling=="bilinear") {
+      decode_options->color_conversion_options.preferred_chroma_upsampling_algorithm = heif_chroma_upsampling_bilinear;
+      decode_options->color_conversion_options.only_use_preferred_chroma_algorithm = true;
+    }
 
     int bit_depth = heif_image_handle_get_luma_bits_per_pixel(handle);
     if (bit_depth < 0) {
@@ -355,9 +524,9 @@ int main(int argc, char** argv)
           }
 
           std::ostringstream s;
-          s << output_filename.substr(0, output_filename.find('.'));
-          s << "-depth";
-          s << output_filename.substr(output_filename.find('.'));
+          s << numbered_output_filename_stem;
+          s << "-depth.";
+          s << output_filename_suffix;
 
           written = encoder->Encode(depth_handle, depth_image, s.str());
           if (!written) {
@@ -422,12 +591,12 @@ int main(int argc, char** argv)
 
             std::string auxType = std::string(auxTypeC);
 
-            heif_image_handle_free_auxiliary_types(aux_handle, &auxTypeC);
+            heif_image_handle_release_auxiliary_type(aux_handle, &auxTypeC);
 
             std::ostringstream s;
-            s << output_filename.substr(0, output_filename.find('.'));
-            s << "-" + auxType;
-            s << output_filename.substr(output_filename.find('.'));
+            s << numbered_output_filename_stem;
+            s << "-" + auxType + ".";
+            s << output_filename_suffix;
 
             std::string auxFilename = s.str();
 
@@ -447,6 +616,80 @@ int main(int argc, char** argv)
 
             heif_image_release(aux_image);
             heif_image_handle_release(aux_handle);
+          }
+        }
+      }
+
+
+      // --- write metadata
+
+      if (option_with_xmp || option_with_exif) {
+        int numMetadata = heif_image_handle_get_number_of_metadata_blocks(handle, nullptr);
+        if (numMetadata>0) {
+          std::vector<heif_item_id> ids(numMetadata);
+          heif_image_handle_get_list_of_metadata_block_IDs(handle, nullptr, ids.data(), numMetadata);
+
+          for (int n = 0; n < numMetadata; n++) {
+
+            // check whether metadata block is XMP
+
+            std::string itemtype = heif_image_handle_get_metadata_type(handle, ids[n]);
+            std::string contenttype = heif_image_handle_get_metadata_content_type(handle, ids[n]);
+
+            if (option_with_xmp && contenttype == "application/rdf+xml") {
+              // read XMP data to memory array
+
+              size_t xmpSize = heif_image_handle_get_metadata_size(handle, ids[n]);
+              std::vector<uint8_t> xmp(xmpSize);
+              err = heif_image_handle_get_metadata(handle, ids[n], xmp.data());
+              if (err.code) {
+                heif_image_handle_release(handle);
+                std::cerr << "Could not read XMP metadata: " << err.message << "\n";
+                return 1;
+              }
+
+              // write XMP data to file
+
+              std::string xmp_filename = numbered_output_filename_stem + ".xmp";
+              std::ofstream ostr(xmp_filename.c_str());
+              ostr.write((char*)xmp.data(), xmpSize);
+            }
+            else if (option_with_exif && itemtype == "Exif") {
+              // read EXIF data to memory array
+
+              size_t exifSize = heif_image_handle_get_metadata_size(handle, ids[n]);
+              std::vector<uint8_t> exif(exifSize);
+              err = heif_image_handle_get_metadata(handle, ids[n], exif.data());
+              if (err.code) {
+                heif_image_handle_release(handle);
+                std::cerr << "Could not read EXIF metadata: " << err.message << "\n";
+                return 1;
+              }
+
+              uint32_t offset = 0;
+              if (option_skip_exif_offset) {
+                if (exifSize<4) {
+                  heif_image_handle_release(handle);
+                  std::cerr << "Invalid EXIF metadata, it is too small.\n";
+                  return 1;
+                }
+
+                offset = (exif[0]<<24) | (exif[1]<<16) | (exif[2]<<8) | exif[3];
+                offset += 4;
+                
+                if (offset >= exifSize) {
+                  heif_image_handle_release(handle);
+                  std::cerr << "Invalid EXIF metadata, offset out of range.\n";
+                  return 1;
+                }
+              }
+
+              // write EXIF data to file
+
+              std::string exif_filename = numbered_output_filename_stem + ".exif";
+              std::ofstream ostr(exif_filename.c_str());
+              ostr.write((char*)exif.data() + offset, exifSize - offset);
+            }
           }
         }
       }
