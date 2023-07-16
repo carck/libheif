@@ -17,16 +17,13 @@
  * You should have received a copy of the GNU Lesser General Public License
  * along with libheif.  If not, see <http://www.gnu.org/licenses/>.
  */
+#include "libheif/heif.h"
 #include <cstddef>
 #include <cstdint>
-
-#if defined(HAVE_CONFIG_H)
-#include "config.h"
-#endif
-
 #include "box.h"
 #include "security_limits.h"
 #include "nclx.h"
+#include "jpeg2000.h"
 #include "mask_image.h"
 
 #include <iomanip>
@@ -563,6 +560,29 @@ Error Box::read(BitstreamRange& range, std::shared_ptr<Box>* result)
       break;
 #endif
 
+    // --- JPEG 2000
+      
+    case fourcc("j2kH"):
+      box = std::make_shared<Box_j2kH>();
+      break;
+
+    case fourcc("cdef"):
+      box = std::make_shared<Box_cdef>();
+      break;
+
+    case fourcc("cmap"):
+      box = std::make_shared<Box_cmap>();
+      break;
+
+    case fourcc("pclr"):
+      box = std::make_shared<Box_pclr>();
+      break;
+
+    case fourcc("j2kL"):
+      box = std::make_shared<Box_j2kL>();
+
+    // --- mski
+      
     case fourcc("mskC"):
       box = std::make_shared<Box_mskC>();
       break;
@@ -802,7 +822,7 @@ Error Box_ftyp::parse(BitstreamRange& range)
 }
 
 
-bool Box_ftyp::has_compatible_brand(uint32_t brand) const
+bool Box_ftyp::has_compatible_brand(heif_brand2 brand) const
 {
   return std::find(m_compatible_brands.begin(),
                    m_compatible_brands.end(),
@@ -834,7 +854,7 @@ std::string Box_ftyp::dump(Indent& indent) const
 }
 
 
-void Box_ftyp::add_compatible_brand(uint32_t brand)
+void Box_ftyp::add_compatible_brand(heif_brand2 brand)
 {
   if (!has_compatible_brand(brand)) {
     m_compatible_brands.push_back(brand);
@@ -1765,14 +1785,14 @@ Error color_profile_nclx::parse(BitstreamRange& range)
 
 Error color_profile_nclx::get_nclx_color_profile(struct heif_color_profile_nclx** out_data) const
 {
-  *out_data = alloc_nclx_color_profile();
+  *out_data = nullptr;
 
-  if (*out_data == nullptr) {
+  struct heif_color_profile_nclx* nclx = alloc_nclx_color_profile();
+
+  if (nclx == nullptr) {
     return Error(heif_error_Memory_allocation_error,
                  heif_suberror_Unspecified);
   }
-
-  struct heif_color_profile_nclx* nclx = *out_data;
 
   struct heif_error err;
 
@@ -1780,16 +1800,19 @@ Error color_profile_nclx::get_nclx_color_profile(struct heif_color_profile_nclx*
 
   err = heif_nclx_color_profile_set_color_primaries(nclx, get_colour_primaries());
   if (err.code) {
+    free_nclx_color_profile(nclx);
     return {err.code, err.subcode};
   }
 
   err = heif_nclx_color_profile_set_transfer_characteristics(nclx, get_transfer_characteristics());
   if (err.code) {
+    free_nclx_color_profile(nclx);
     return {err.code, err.subcode};
   }
 
   err = heif_nclx_color_profile_set_matrix_coefficients(nclx, get_matrix_coefficients());
   if (err.code) {
+    free_nclx_color_profile(nclx);
     return {err.code, err.subcode};
   }
 
@@ -1807,6 +1830,8 @@ Error color_profile_nclx::get_nclx_color_profile(struct heif_color_profile_nclx*
   nclx->color_primary_blue_y = primaries.blueY;
   nclx->color_primary_white_x = primaries.whiteX;
   nclx->color_primary_white_y = primaries.whiteY;
+
+  *out_data = nclx;
 
   return Error::Ok;
 }
@@ -1854,10 +1879,12 @@ void color_profile_nclx::set_undefined()
 
 void color_profile_nclx::set_from_heif_color_profile_nclx(const struct heif_color_profile_nclx* nclx)
 {
-  m_colour_primaries = nclx->color_primaries;
-  m_transfer_characteristics = nclx->transfer_characteristics;
-  m_matrix_coefficients = nclx->matrix_coefficients;
-  m_full_range_flag = nclx->full_range_flag;
+  if (nclx) {
+    m_colour_primaries = nclx->color_primaries;
+    m_transfer_characteristics = nclx->transfer_characteristics;
+    m_matrix_coefficients = nclx->matrix_coefficients;
+    m_full_range_flag = nclx->full_range_flag;
+  }
 }
 
 
@@ -2221,6 +2248,14 @@ Error Box_clli::write(StreamWriter& writer) const
   prepend_header(writer, box_start);
 
   return Error::Ok;
+}
+
+
+Box_mdcv::Box_mdcv()
+{
+  set_short_type(fourcc("mdcv"));
+  
+  memset(&mdcv, 0, sizeof(heif_mastering_display_colour_volume));
 }
 
 

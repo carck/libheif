@@ -91,6 +91,12 @@ endmacro()
 plugin_option(LIBDE265 LIBDE265 "libde265" "HEIC decoder" OFF)
 plugin_option(X265 X265 "x265" "HEIC encoder" OFF)
 plugin_option(KVAZAAR kvazaar "kvazaar" "kvazaar HEVC encoder" OFF)
+if (HAVE_KVAZAAR_ENABLE_LOGGING)
+    add_definitions(-DHAVE_KVAZAAR_ENABLE_LOGGING=1)
+else()
+    add_definitions(-DHAVE_KVAZAAR_ENABLE_LOGGING=0)
+endif()
+
 plugin_option(DAV1D DAV1D "Dav1d" "AVIF decoder" OFF)
 plugin_option(AOM_ENCODER AOM "aom" "AVIF encoder" OFF)
 plugin_option(AOM_DECODER AOM "aom" "AVIF decoder" OFF)
@@ -206,16 +212,11 @@ endif (DOXYGEN_FOUND)
 
 # --- Testing
 
-# Disable testing by default because this requires building with full symbol visibility (switched off WITH_REDUCED_VISIBILITY).
-option(BUILD_TESTING "" OFF)
+option(BUILD_TESTING "" ON)
 include(CTest)
 if(BUILD_TESTING)
     # TODO: fix tests on windows.
     add_subdirectory (tests)
-endif()
-
-if (BUILD_TESTING AND WITH_REDUCED_VISIBILITY)
-    message(FATAL_ERROR "Tests can only be compiled with full symbol visibility (WITH_REDUCED_VISIBILITY=OFF)")
 endif()
 
 
@@ -273,7 +274,6 @@ set(CPACK_SOURCE_IGNORE_FILES
 /Makefile$
 /libtool$
 /libheif.pc$
-/config.h$
 stamp-h1$
 )
 include(CPack)

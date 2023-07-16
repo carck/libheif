@@ -331,13 +331,6 @@ typedef uint32_t heif_property_id;
 
 // ========================= library initialization ======================
 
-// You should call heif_init() when you start using libheif and heif_deinit() when you are finished.
-// These calls are reference counted. Each call to heif_init() should be matched by one call to heif_deinit().
-// For backwards compatibility, it is not really necessary to call heif_init(), but if you don't, the plugins
-// registered by default may not be freed correctly.
-// However, this should not be mixed, i.e. one part of your program does use heif_init()/heif_deinit() and another doesn't.
-// If in doubt, enclose everything with init/deinit.
-
 struct heif_init_params
 {
   int version;
@@ -345,6 +338,20 @@ struct heif_init_params
   // currently no parameters
 };
 
+
+// You should call heif_init() when you start using libheif and heif_deinit() when you are finished.
+// These calls are reference counted. Each call to heif_init() should be matched by one call to heif_deinit().
+//
+// For backwards compatibility, it is not really necessary to call heif_init(), but some library memory objects
+// will never be freed if you do not call heif_init()/heif_deinit().
+//
+// heif_init() will load the external modules installed in the default plugin path. Thus, you need it when you
+// want to load external plugins from the default path.
+// Codec plugins that are compiled into the library directly (selected by the compile-time parameters of libheif)
+// will be available even without heif_init().
+//
+// Make sure that you don't have one part of your program use heif_init()/heif_deinit() and another part that doesn't
+// use it as the latter may try to use an uninitialized library. If in doubt, enclose everything with init/deinit.
 
 // You may pass nullptr to get default parameters. Currently, no parameters are supported.
 LIBHEIF_API
@@ -458,6 +465,26 @@ typedef uint32_t heif_brand2;
 #define heif_brand2_evbs   heif_fourcc('e','v','b','s') // EVC sequence
 #define heif_brand2_jpeg   heif_fourcc('j','p','e','g') // JPEG, per ISO/IEC 23008-12 Annex H.4
 #define heif_brand2_jpgs   heif_fourcc('j','p','g','s') // JPEG sequence, per ISO/IEC 23008-12 Annex H.5
+#define heif_brand2_j2ki   heif_fourcc('j','2','k','i') // JPEG2000 image, per ISO/IEC 15444-16:2021 Section 6.5
+#define heif_brand2_j2is   heif_fourcc('j','2','i','s') // JPEG2000 sequence, per ISO/IEC 15444-16:2021 Section 7.6
+
+/**
+ * Multi-image application format (MIAF) brand.
+ *
+ * This is HEIF with additional constraints for interoperability.
+ *
+ * See ISO/IEC 23000-22.
+ */
+#define heif_brand2_miaf   heif_fourcc('m','i','a','f')
+
+/**
+ * Single picture file brand.
+ *
+ * This is a compatible brand indicating the file contains a single intra-coded picture.
+ *
+ * See ISO/IEC 23008-12:2022 Section 10.2.5.
+*/
+#define heif_brand2_1pic   heif_fourcc('1','p','i','c')
 
 // input data should be at least 12 bytes
 LIBHEIF_API
@@ -1113,18 +1140,82 @@ void heif_item_get_property_transform_crop_borders(const struct heif_context* co
 
 // Planar RGB images are specified as heif_colorspace_RGB / heif_chroma_444.
 
+/**
+ * libheif known compression formats.
+ */
 enum heif_compression_format
 {
+  /**
+   * Unspecified / undefined compression format.
+   *
+   * This is used to mean "no match" or "any decoder" for some parts of the
+   * API. It does not indicate a specific compression format.
+   */
   heif_compression_undefined = 0,
+  /**
+   * HEVC compression, used for HEIC images.
+   *
+   * This is equivalent to H.265.
+  */
   heif_compression_HEVC = 1,
+  /**
+   * AVC compression. (Currently unused in libheif.)
+   *
+   * The compression is defined in ISO/IEC 14496-10. This is equivalent to H.264.
+   *
+   * The encapsulation is defined in ISO/IEC 23008-12:2022 Annex E.
+   */
   heif_compression_AVC = 2,
+  /**
+   * JPEG compression.
+   *
+   * The compression format is defined in ISO/IEC 10918-1. The encapsulation
+   * of JPEG is specified in ISO/IEC 23008-12:2022 Annex H.
+  */
   heif_compression_JPEG = 3,
+  /**
+   * AV1 compression, used for AVIF images.
+   *
+   * The compression format is provided at https://aomediacodec.github.io/av1-spec/
+   *
+   * The encapsulation is defined in https://aomediacodec.github.io/av1-avif/
+   */
   heif_compression_AV1 = 4,
+  /**
+   * VVC compression. (Currently unused in libheif.)
+   *
+   * The compression format is defined in ISO/IEC 23090-3. This is equivalent to H.266.
+   *
+   * The encapsulation is defined in ISO/IEC 23008-12:2022 Annex L.
+   */
   heif_compression_VVC = 5,
+  /**
+   * EVC compression. (Currently unused in libheif.)
+   *
+   * The compression format is defined in ISO/IEC 23094-1. This is equivalent to H.266.
+   *
+   * The encapsulation is defined in ISO/IEC 23008-12:2022 Annex M.
+   */
   heif_compression_EVC = 6,
-  heif_compression_JPEG2000 = 7,  // ISO/IEC 15444-16:2021
-  heif_compression_uncompressed = 8, // ISO/IEC 23001-17:2023
-  heif_compression_mask = 9          // ISO/IEC 23008-12:2022 Section 6.10.2
+  /**
+   * JPEG 2000 compression. (Currently unused in libheif.)
+   *
+   * The encapsulation of JPEG 2000 is specified in ISO/IEC 15444-16:2021.
+   * The core encoding is defined in ISO/IEC 15444-1, or ITU-T T.800.
+  */
+  heif_compression_JPEG2000 = 7,
+  /**
+   * Uncompressed encoding.
+   *
+   * This is defined in ISO/IEC 23001-17:2023 (Draft International Standard).
+  */
+  heif_compression_uncompressed = 8,
+  /**
+   * Mask image encoding.
+   *
+   * See ISO/IEC 23008-12:2022 Section 6.10.2
+   */
+  heif_compression_mask = 9
 };
 
 enum heif_chroma
@@ -2747,7 +2838,7 @@ struct heif_error heif_region_item_add_region_inline_mask_data(struct heif_regio
  * by a width and height.
  *
  * The mask data is held as inline data on the region, one bit per pixel. The provided
- * image is converted to inline data, where any non-zero pixel becomes part of the
+ * image is converted to inline data, where any pixel with a value >= 0x80 becomes part of the
  * mask region. If the image width is less that the specified width, it is expanded
  * to match the width of the region (zero fill on the right). If the image height is
  * less than the specified height, it is expanded to match the height of the region

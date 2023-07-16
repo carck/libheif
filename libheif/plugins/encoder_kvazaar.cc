@@ -22,11 +22,6 @@
 #include "libheif/heif_plugin.h"
 #include "encoder_kvazaar.h"
 #include <memory>
-
-#if defined(HAVE_CONFIG_H)
-#include "config.h"
-#endif
-
 #include <string>
 #include <cstring>
 #include <cassert>
@@ -369,7 +364,9 @@ static struct heif_error kvazaar_encode_image(void* encoder_raw, const struct he
 
   kvz_config* config = api->config_alloc();
   api->config_init(config); // param, encoder->preset.c_str(), encoder->tune.c_str());
+#if HAVE_KVAZAAR_ENABLE_LOGGING
   config->enable_logging_output = 0;
+#endif
 
 #if 1
 #if 0
