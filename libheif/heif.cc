@@ -33,7 +33,7 @@
 #include <set>
 #include <limits>
 
-#if defined(__EMSCRIPTEN__)
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_STANDALONE_WASM__)
 #include "heif_emscripten.h"
 #endif
 
@@ -787,6 +787,27 @@ int heif_image_handle_get_ispe_height(const struct heif_image_handle* handle)
   else {
     return 0;
   }
+}
+
+
+struct heif_context* heif_image_handle_get_context(const struct heif_image_handle* handle)
+{
+  auto ctx = new heif_context();
+  ctx->context = handle->context;
+  return ctx;
+}
+
+
+struct heif_error heif_image_handle_get_preferred_decoding_colorspace(const struct heif_image_handle* image_handle,
+                                                                      enum heif_colorspace* out_colorspace,
+                                                                      enum heif_chroma* out_chroma)
+{
+  Error err = image_handle->image->get_preferred_decoding_colorspace(out_colorspace, out_chroma);
+  if (err) {
+    return err.error_struct(image_handle->image.get());
+  }
+
+  return error_Ok;
 }
 
 
@@ -1997,16 +2018,16 @@ enum heif_transform_mirror_direction heif_item_get_property_transform_mirror(con
   std::vector<std::shared_ptr<Box>> properties;
   Error err = file->get_properties(itemId, properties);
   if (err) {
-    return heif_transform_mirror_direction_horizontal;
+    return heif_transform_mirror_direction_invalid;
   }
 
   if (propertyId - 1 < 0 || propertyId - 1 >= properties.size()) {
-    return heif_transform_mirror_direction_horizontal;
+    return heif_transform_mirror_direction_invalid;
   }
 
   auto imir = std::dynamic_pointer_cast<Box_imir>(properties[propertyId - 1]);
   if (!imir) {
-    return heif_transform_mirror_direction_horizontal;
+    return heif_transform_mirror_direction_invalid;
   }
 
   return imir->get_mirror_direction();

@@ -252,6 +252,63 @@ int main(int argc, char** argv)
     printf("image: %dx%d (id=%d)%s\n", width, height, IDs[i], primary ? ", primary" : "");
 
 
+    heif_colorspace colorspace;
+    heif_chroma chroma;
+    err = heif_image_handle_get_preferred_decoding_colorspace(handle, &colorspace, &chroma);
+    if (err.code) {
+      std::cerr << err.message << "\n";
+      return 10;
+    }
+
+    printf("  colorspace: ");
+    switch (colorspace) {
+      case heif_colorspace_YCbCr:
+        printf("YCbCr, ");
+        break;
+      case heif_colorspace_RGB:
+        printf("RGB");
+        break;
+      case heif_colorspace_monochrome:
+        printf("monochroma");
+        break;
+      default:
+        printf("unknown");
+        break;
+    }
+
+    if (colorspace==heif_colorspace_YCbCr) {
+      switch (chroma) {
+        case heif_chroma_420:
+          printf("4:2:0");
+          break;
+        case heif_chroma_422:
+          printf("4:2:2");
+          break;
+        case heif_chroma_444:
+          printf("4:4:4");
+          break;
+        default:
+          printf("unknown");
+          break;
+      }
+    }
+
+    printf("\n");
+
+    // --- bit depth
+
+    int luma_depth = heif_image_handle_get_luma_bits_per_pixel(handle);
+    int chroma_depth = heif_image_handle_get_chroma_bits_per_pixel(handle);
+
+    printf("  bit depth: ");
+    if (luma_depth==chroma_depth) {
+      printf("%d\n", luma_depth);
+    }
+    else {
+      printf("%d,%d\n", luma_depth, chroma_depth);
+    }
+
+
     // --- thumbnails
 
     int nThumbnails = heif_image_handle_get_number_of_thumbnails(handle);
@@ -310,9 +367,13 @@ int main(int argc, char** argv)
         return 1;
       }
 
-      printf(" (%dx%d)\n",
+      printf("    size: %dx%d\n",
              heif_image_handle_get_width(depth_handle),
              heif_image_handle_get_height(depth_handle));
+
+      int depth_luma_bpp = heif_image_handle_get_luma_bits_per_pixel(depth_handle);
+      printf("    bits per pixel: %d\n", depth_luma_bpp);
+
 
       const struct heif_depth_representation_info* depth_info;
       if (heif_image_handle_get_depth_image_representation_info(handle, depth_id, &depth_info)) {
