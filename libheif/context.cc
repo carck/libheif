@@ -1,6 +1,6 @@
 /*
  * HEIF codec.
- * Copyright (c) 2017 struktur AG, Dirk Farin <farin@struktur.de>
+ * Copyright (c) 2017 Dirk Farin <dirk.farin@gmail.com>
  *
  * This file is part of libheif.
  *
@@ -42,6 +42,7 @@
 #include "security_limits.h"
 #include "hevc.h"
 #include "avif.h"
+#include "jpeg.h"
 #include "plugin_registry.h"
 #include "libheif/color-conversion/colorconversion.h"
 #include "mask_image.h"
@@ -883,12 +884,15 @@ Error HeifContext::interpret_heif_file()
     }
     std::string content_type = m_heif_file->get_content_type(id);
 
+    std::string item_uri_type = m_heif_file->get_item_uri_type(id);
+
     // we now assign all kinds of metadata to the image, not only 'Exif' and 'XMP'
 
     std::shared_ptr<ImageMetadata> metadata = std::make_shared<ImageMetadata>();
     metadata->item_id = id;
     metadata->item_type = item_type;
     metadata->content_type = content_type;
+    metadata->item_uri_type = item_uri_type;
 
     Error err = m_heif_file->get_compressed_image_data(id, &(metadata->m_data));
     if (err) {
@@ -969,20 +973,33 @@ Error HeifContext::interpret_heif_file()
             img_iter->second->add_region_item_id(id);
             m_region_items.push_back(region_item);
           }
+
           /* When the geometry 'mask' of a region is represented by a mask stored in
           * another image item the image item containing the mask shall be identified
           * by an item reference of type 'mask' from the region item to the image item
           * containing the mask. */
           if (ref.header.get_short_type() == fourcc("mask")) {
             std::vector<uint32_t> refs = ref.to_item_ID;
-            int mask_index = 0;
+            size_t mask_index = 0;
             for (int j = 0; j < region_item->get_number_of_regions(); j++) {
               if (region_item->get_regions()[j]->getRegionType() == heif_region_type_referenced_mask) {
                 std::shared_ptr<RegionGeometry_ReferencedMask> mask_geometry = std::dynamic_pointer_cast<RegionGeometry_ReferencedMask>(region_item->get_regions()[j]);
+
+                if (mask_index >= refs.size()) {
+                  return Error(heif_error_Invalid_input,
+                               heif_suberror_Unspecified,
+                               "Region mask reference with non-existing mask image reference");
+                }
+
                 uint32_t mask_image_id = refs[mask_index];
-                assert(is_image(mask_image_id));
-                mask_geometry->referenced_item = mask_image_id;
+                if (!is_image(mask_image_id)) {
+                  return Error(heif_error_Invalid_input,
+                               heif_suberror_Unspecified,
+                               "Region mask referenced item is not an image");
+                }
+
                 auto mask_image = m_all_images.find(mask_image_id)->second;
+                mask_geometry->referenced_item = mask_image_id;
                 if (mask_geometry->width == 0) {
                   mask_geometry->width = mask_image->get_ispe_width();
                 }
@@ -1982,13 +1999,18 @@ Error HeifContext::decode_derived_image(heif_item_id ID,
 
   if ((int) image_references.size() != 1) {
     return Error(heif_error_Invalid_input,
-                 heif_suberror_Missing_grid_images,
+                 heif_suberror_Unspecified,
                  "'iden' image with more than one reference image");
   }
 
 
   heif_item_id reference_image_id = image_references[0];
 
+  if (reference_image_id == ID) {
+    return Error(heif_error_Invalid_input,
+                 heif_suberror_Unspecified,
+                 "'iden' image referring to itself");
+  }
 
   Error error = decode_image_planar(reference_image_id, img,
                                     heif_colorspace_RGB, options, false); // TODO: always RGB ?

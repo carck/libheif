@@ -1,7 +1,7 @@
 /*
  * OpenJPEG codec.
  * Copyright (c) 2023 Devon Sookhoo
- * Copyright (c) 2023 Dirk Farin <farin@struktur.de>
+ * Copyright (c) 2023 Dirk Farin <dirk.farin@gmail.com>
  *
  * This file is part of libheif.
  *
@@ -457,6 +457,7 @@ struct heif_error opj_encode_image(void* encoder_raw, const struct heif_image* i
       break;
     default:
       assert(false);
+      return heif_error{heif_error_Encoding_error, heif_suberror_Unspecified, "OpenJPEG encoder plugin received image with invalid colorspace."};
   }
 
   int band_count = (int) channels.size();
@@ -483,7 +484,6 @@ struct heif_error opj_encode_image(void* encoder_raw, const struct heif_image* i
     }
 
     component_params[comp].prec = bpp;
-    component_params[comp].bpp = bpp;
     component_params[comp].sgnd = 0;
     component_params[comp].dx = comp == 0 ? 1 : sub_dx;
     component_params[comp].dy = comp == 0 ? 1 : sub_dy;

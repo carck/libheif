@@ -331,7 +331,7 @@ JPEG2000_SIZ_segment jpeg2000_get_SIZ_segment(const HeifFile& file, heif_item_id
       JPEG2000_SIZ_segment siz;
 
       // space for full header and one component
-      if (i + 2 + 38 + 3 > data.size()) {
+      if (i + 2 + 40 + 3 > data.size()) {
         return {};
       }
 
@@ -339,7 +339,7 @@ JPEG2000_SIZ_segment jpeg2000_get_SIZ_segment(const HeifFile& file, heif_item_id
 
       int nComponents = read16(data, 40);
 
-      if (i + 2 + 38 + nComponents * 3 > data.size()) {
+      if (i + 2 + 40 + nComponents * 3 > data.size()) {
         return {};
       }
 
@@ -357,7 +357,7 @@ JPEG2000_SIZ_segment jpeg2000_get_SIZ_segment(const HeifFile& file, heif_item_id
         JPEG2000_SIZ_segment::component comp;
         comp.precision = data[42 + c * 3];
         comp.is_signed = (comp.precision & 0x80);
-        comp.precision = (comp.precision & 0x7F) + 1;
+        comp.precision = uint8_t((comp.precision & 0x7F) + 1);
         comp.h_separation = data[43 + c * 3];
         comp.v_separation = data[44 + c * 3];
         siz.components.push_back(comp);

@@ -3,7 +3,7 @@
 
   MIT License
 
-  Copyright (c) 2017 struktur AG, Dirk Farin <farin@struktur.de>
+  Copyright (c) 2017 Dirk Farin <dirk.farin@gmail.com>
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
   of this software and associated documentation files (the "Software"), to deal
@@ -37,6 +37,7 @@
 #include <string>
 
 #include <libheif/heif.h>
+#include <libheif/heif_properties.h>
 
 #if HAVE_LIBJPEG
 #include "decoder_jpeg.h"
@@ -113,7 +114,7 @@ static struct option long_options[] = {
     {(char* const) "avif",                    no_argument,       0,              'A'},
     {(char* const) "jpeg",                    no_argument,       0,              OPTION_USE_JPEG_COMPRESSION},
     {(char* const) "jpeg2000",                no_argument,       0,              OPTION_USE_JPEG2000_COMPRESSION},
-#if ENABLE_UNCOMPRESSED_ENCODER
+#if WITH_UNCOMPRESSED_CODEC
     {(char* const) "uncompressed",                no_argument,       0,                     'U'},
 #endif
     {(char* const) "matrix_coefficients",         required_argument, 0,                     OPTION_NCLX_MATRIX_COEFFICIENTS},
@@ -160,7 +161,7 @@ void show_help(const char* argv0)
             << "  -A, --avif            encode as AVIF (not needed if output filename with .avif suffix is provided)\n"
             << "      --jpeg            encode as JPEG\n"
             << "      --jpeg2000        encode as JPEG-2000 (experimental)\n"
-#if ENABLE_UNCOMPRESSED_ENCODER
+#if WITH_UNCOMPRESSED_CODEC
             << "  -U, --uncompressed    encode as uncompressed image (according to ISO 23001-17) (EXPERIMENTAL)\n"
 #endif
             << "      --list-encoders         list all available encoders for all compression formats\n"
@@ -604,6 +605,16 @@ int main(int argc, char** argv)
   if (optind > argc - 1) {
     show_help(argv[0]);
     return 0;
+  }
+
+
+  // If we were given a list of filenames and no '-o' option, check whether the last filename is the desired output filename.
+
+  if (output_filename.empty() && argc>1) {
+    if (guess_compression_format_from_filename(argv[argc-1]) != heif_compression_undefined) {
+      output_filename = argv[argc-1];
+      argc--;
+    }
   }
 
 

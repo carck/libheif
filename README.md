@@ -26,10 +26,13 @@ libheif has support for:
 * decoding of files while downloading (e.g. extract image size before file has been completely downloaded)
 
 Supported codecs:
-* HEIC: libde265, x265, kvazaar
-* AVIF: libaom, dav1d, rav1d, svt-av1
-* JPEG: libjpeg
-* JPEG-2000: OpenJPEG
+| Format       |  Decoders        |  Encoders           |
+|:-------------|:----------------:|:-------------------:|
+| HEIC         | libde265, ffmpeg | x265, kvazaar       |
+| AVIF         | AOM, dav1d       | AOM, rav1e, svt-av1 |
+| JPEG         | libjpeg(-turbo)  | libjpeg(-turbo)     |
+| JPEG2000     | OpenJPEG         | OpenJPEG            |
+| uncompressed | built-in         | built-in            |
 
 ## API
 
@@ -113,11 +116,13 @@ There is also an experimental Go API, but this is not stable yet.
 
 This library uses the CMake build system (the earlier autotools build files have been removed in v1.16.0).
 
+For a minimal configuration, we recommend to use the codecs libde265 and x265 for HEIC and AOM for AVIF.
 Make sure that you compile and install [libde265](https://github.com/strukturag/libde265)
 first, so that the configuration script will find this.
-Also install x265 and its development files if you want to use HEIF encoding.
+Also install x265 and its development files if you want to use HEIF encoding, but note that x265 is GPL.
+An alternative to x265 is kvazaar (BSD).
 
-The basic build steps are as follows:
+The basic build steps are as follows (--preset argument needs CMake >= 3.21):
 
 ````sh
 mkdir build
@@ -136,7 +141,36 @@ There are CMake presets to cover the most frequent use cases.
 * `fuzzing`: similar to `testing`, this builds the fuzzers. The library should not distributed.
 
 You can optionally adapt these standard configurations to your needs.
-This can be done, for example, by calling `ccmake ..` from within the `build` directory.
+This can be done, for example, by calling `ccmake .` from within the `build` directory.
+
+### CMake configuration variables
+
+Libheif supports many different codecs. In order to reduce the number of dependencies and the library size,
+you can choose which of these codecs to include. Each codec can be compiled either as built-in to the library
+with a hard dependency, or as a separate plugin file that is loaded dynamically.
+
+For each codec, there are two configuration variables:
+
+* `WITH_{codec}`: enables the codec
+* `WITH_{codec}_PLUGIN`: when enabled, the codec is compiled as a separate plugin.
+
+In order to use dynamic plugins, also make sure that `ENABLE_PLUGIN_LOADING` is enabled.
+The placeholder `{codec}` can have these values: `LIBDE265`, `X265`, `AOM_DECODER`, `AOM_ENCODER`, `SvtEnc`, `DAV1D`, `FFMPEG_HEVC_DECODER`, `JPEG_DECODER`, `JPEG_ENCODER`, `KVAZAAR`, `OpenJPEG_DECODER`, `OpenJPEG_ENCODER`.
+
+Further options are:
+
+* `WITH_UNCOMPRESSED_CODEC`: enable support for uncompressed images according to ISO/IEC 23001-17:2023. This is *experimental*
+   and not available as a dynamic plugin.
+* `WITH_DEFLATE_HEADER_COMPRESSION`: enables support for compressed metadata. When enabled, it adds a dependency to `zlib`.
+   Note that header compression is not widely supported yet.
+* `WITH_LIBSHARPYUV`: enables high-quality YCbCr/RGB color space conversion algorithms (requires `libsharpyuv`,
+   e.g. from the `third-party` directory).
+* `ENABLE_MULTITHREADING_SUPPORT`: can be used to disable any multithreading support, e.g. for embedded platforms.
+* `ENABLE_PARALLEL_TILE_DECODING`: when enabled, libheif will decode tiled images in parallel to speed up compilation.
+* `PLUGIN_DIRECTORY`: the directory where libheif will search for dynamic plugins when the environment
+  variable `LIBHEIF_PLUGIN_PATH` is not set.
+* `WITH_REDUCED_VISIBILITY`: only export those symbols into the library that are public API.
+  Has to be turned off for running the tests.
 
 ### macOS
 
@@ -146,7 +180,7 @@ This can be done, for example, by calling `ccmake ..` from within the `build` di
     brew install cmake make pkg-config x265 libde265 libjpeg libtool
     ```
 
-2. Configure and build project
+2. Configure and build project (--preset argument needs CMake >= 3.21):
 
     ```sh
     mkdir build
@@ -226,6 +260,11 @@ The advantage is that only the required plugins have to be installed and libheif
 The plugins are loaded from the colon-separated (semicolon-separated on Windows) list of directories stored in the environment variable `LIBHEIF_PLUGIN_PATH`.
 If this variable is empty, they are loaded from a directory specified in the CMake configuration.
 You can also add plugin directories programmatically.
+
+### Codec specific notes
+
+* the FFMPEG decoding plugin can make use of h265 hardware decoders. However, it currently (v1.17.0, ffmpeg v4.4.2) does not work
+  correctly with all streams. Thus, libheif still prefers the libde265 decoder if it is available.
 
 ## Encoder benchmark
 
@@ -326,6 +365,7 @@ You can [sponsor](https://github.com/sponsors/farindk) the development using the
 
 A big thank you goes to these major sponsors for supporting the development of libheif:
 
+* Pinterest
 * Shopify <img src="logos/sponsors/shopify.svg" alt="shopify-logo" height="20"/>
 * StrukturAG
 

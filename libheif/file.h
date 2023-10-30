@@ -1,6 +1,6 @@
 /*
  * HEIF codec.
- * Copyright (c) 2017 struktur AG, Dirk Farin <farin@struktur.de>
+ * Copyright (c) 2017 Dirk Farin <dirk.farin@gmail.com>
  *
  * This file is part of libheif.
  *
@@ -21,7 +21,10 @@
 #ifndef LIBHEIF_FILE_H
 #define LIBHEIF_FILE_H
 
+#include "avif.h"
 #include "box.h"
+#include "hevc.h"
+#include "nclx.h"
 
 #include <map>
 #include <memory>
@@ -73,6 +76,8 @@ public:
   std::string get_item_type(heif_item_id ID) const;
 
   std::string get_content_type(heif_item_id ID) const;
+
+  std::string get_item_uri_type(heif_item_id ID) const;
 
   Error get_compressed_image_data(heif_item_id ID, std::vector<uint8_t>* out_data) const;
 

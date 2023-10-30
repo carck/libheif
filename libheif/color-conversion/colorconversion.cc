@@ -1,6 +1,6 @@
 /*
  * HEIF codec.
- * Copyright (c) 2017 struktur AG, Dirk Farin <farin@struktur.de>
+ * Copyright (c) 2017 Dirk Farin <dirk.farin@gmail.com>
  *
  * This file is part of libheif.
  *
@@ -40,6 +40,11 @@
 #include "hdr_sdr.h"
 #include "chroma_sampling.h"
 
+#if ENABLE_MULTITHREADING_SUPPORT
+
+#include <mutex>
+
+#endif
 
 #define DEBUG_ME 0
 #define DEBUG_PIPELINE_CREATION 0
@@ -203,9 +208,12 @@ std::ostream& operator<<(std::ostream& ostr, const ColorState& state)
 
 std::vector<std::shared_ptr<ColorConversionOperation>> ColorConversionPipeline::m_operation_pool;
 
-
 void ColorConversionPipeline::init_ops()
 {
+#if ENABLE_MULTITHREADING_SUPPORT
+  static std::mutex init_ops_mutex;
+  std::lock_guard<std::mutex> lock(init_ops_mutex);
+#endif
   if (!m_operation_pool.empty()) {
     return;
   }
@@ -234,8 +242,12 @@ void ColorConversionPipeline::init_ops()
   ops.push_back(std::make_shared<Op_to_sdr_planes>());
   ops.push_back(std::make_shared<Op_YCbCr420_bilinear_to_YCbCr444<uint8_t>>());
   ops.push_back(std::make_shared<Op_YCbCr420_bilinear_to_YCbCr444<uint16_t>>());
+  ops.push_back(std::make_shared<Op_YCbCr422_bilinear_to_YCbCr444<uint8_t>>());
+  ops.push_back(std::make_shared<Op_YCbCr422_bilinear_to_YCbCr444<uint16_t>>());
   ops.push_back(std::make_shared<Op_YCbCr444_to_YCbCr420_average<uint8_t>>());
   ops.push_back(std::make_shared<Op_YCbCr444_to_YCbCr420_average<uint16_t>>());
+  ops.push_back(std::make_shared<Op_YCbCr444_to_YCbCr422_average<uint8_t>>());
+  ops.push_back(std::make_shared<Op_YCbCr444_to_YCbCr422_average<uint16_t>>());
   ops.push_back(std::make_shared<Op_Any_RGB_to_YCbCr_420_Sharp>());
 }
 

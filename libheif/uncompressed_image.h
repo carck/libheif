@@ -50,6 +50,10 @@ public:
   {
     uint16_t component_type;
     std::string component_type_uri;
+
+    std::string get_component_type_name() const { return get_component_type_name(component_type); }
+
+    static std::string get_component_type_name(uint16_t type);
   };
 
   const std::vector<Component>& get_components() const { return m_components; }
@@ -83,7 +87,7 @@ public:
   struct Component
   {
     uint16_t component_index;
-    uint8_t component_bit_depth;
+    uint16_t component_bit_depth; // range [1..256]
     uint8_t component_format;
     uint8_t component_align_size;
   };
@@ -158,9 +162,9 @@ public:
     m_pad_unknown = pad_unknown;
   }
 
-  uint8_t get_pixel_size() const { return m_pixel_size; }
+  uint32_t get_pixel_size() const { return m_pixel_size; }
 
-  void set_pixel_size(const uint8_t pixel_size)
+  void set_pixel_size(const uint32_t pixel_size)
   {
     m_pixel_size = pixel_size;
   }
@@ -207,7 +211,7 @@ protected:
   bool m_block_little_endian;
   bool m_block_reversed;
   bool m_pad_unknown;
-  uint8_t m_pixel_size;
+  uint32_t m_pixel_size;
   uint32_t m_row_align_size;
   uint32_t m_tile_align_size;
   uint32_t m_num_tile_cols;

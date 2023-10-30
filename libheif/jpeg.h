@@ -1,6 +1,6 @@
 /*
- * HEIF codec.
- * Copyright (c) 2017 struktur AG, Dirk Farin <farin@struktur.de>
+ * HEIF JPEG codec.
+ * Copyright (c) 2023 Dirk Farin <dirk.farin@gmail.com>
  *
  * This file is part of libheif.
  *
@@ -18,9 +18,35 @@
  * along with libheif.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef HEIF_ENCODER_OPENJPEG
-#define HEIF_ENCODER_OPENJPEG
+#ifndef LIBHEIF_JPEG_H
+#define LIBHEIF_JPEG_H
 
-const struct heif_encoder_plugin* get_encoder_plugin_openjpeg();
+#include "box.h"
+#include <string>
+#include <vector>
 
-#endif
+class Box_jpgC : public Box
+{
+public:
+  Box_jpgC()
+  {
+    set_short_type(fourcc("jpgC"));
+  }
+
+  const std::vector<uint8_t>& get_data() { return m_data; }
+
+  void set_data(const std::vector<uint8_t>& data) { m_data = data; }
+
+  std::string dump(Indent&) const override;
+
+  Error write(StreamWriter& writer) const override;
+
+protected:
+  Error parse(BitstreamRange& range) override;
+
+private:
+  std::vector<uint8_t> m_data;
+};
+
+
+#endif // LIBHEIF_JPEG_H

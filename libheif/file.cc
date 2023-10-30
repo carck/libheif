@@ -1,6 +1,6 @@
 /*
  * HEIF codec.
- * Copyright (c) 2017 struktur AG, Dirk Farin <farin@struktur.de>
+ * Copyright (c) 2017 Dirk Farin <dirk.farin@gmail.com>
  *
  * This file is part of libheif.
  *
@@ -21,7 +21,10 @@
 #include "file.h"
 #include "libheif/box.h"
 #include "libheif/heif.h"
+#include "libheif/heif_properties.h"
 #include "libheif/jpeg2000.h"
+#include "libheif/jpeg.h"
+#include "libheif/vvc.h"
 
 #include <cstdint>
 #include <fstream>
@@ -250,10 +253,19 @@ Error HeifFile::parse_heif_file(BitstreamRange& range)
     std::shared_ptr<Box> box;
     Error error = Box::read(range, &box);
 
+    if (range.error() || range.eof()) {
+      break;
+    }
+
     // When an EOF error is returned, this is not really a fatal exception,
     // but simply the indication that we reached the end of the file.
-    if (error != Error::Ok || range.error() || range.eof()) {
+    // TODO: this design should be cleaned up
+    if (error.error_code == heif_error_Invalid_input && error.sub_error_code == heif_suberror_End_of_data) {
       break;
+    }
+
+    if (error != Error::Ok) {
+      return error;
     }
 
     m_top_level_boxes.push_back(box);
@@ -454,6 +466,16 @@ std::string HeifFile::get_content_type(heif_item_id ID) const
   }
 
   return infe_box->get_content_type();
+}
+
+std::string HeifFile::get_item_uri_type(heif_item_id ID) const
+{
+  auto infe_box = get_infe(ID);
+  if (!infe_box) {
+    return "";
+  }
+
+  return infe_box->get_item_uri_type();
 }
 
 
@@ -1183,7 +1205,7 @@ void HeifFile::add_iref_reference(heif_item_id from, uint32_t type,
     m_meta_box->append_child_box(m_iref_box);
   }
 
-  m_iref_box->add_reference(from, type, to);
+  m_iref_box->add_references(from, type, to);
 }
 
 void HeifFile::set_auxC_property(heif_item_id id, const std::string& type)
