@@ -1268,9 +1268,9 @@ Error Box_iloc::read_data(const Item& item,
     }
     else {
       std::stringstream sstr;
-      sstr << "Item construction method " << item.construction_method << " not implemented";
+      sstr << "Item construction method " << (int) item.construction_method << " not implemented";
       return Error(heif_error_Unsupported_feature,
-                   heif_suberror_No_idat_box,
+                   heif_suberror_Unsupported_item_construction_method,
                    sstr.str());
     }
   }
@@ -2854,7 +2854,11 @@ std::string Box_idat::dump(Indent& indent) const
   std::ostringstream sstr;
   sstr << Box::dump(indent);
 
-  sstr << indent << "number of data bytes: " << get_box_size() - get_header_size() << "\n";
+  if (get_box_size() >= get_header_size()) {
+    sstr << indent << "number of data bytes: " << get_box_size() - get_header_size() << "\n";
+  } else {
+     sstr << indent << "number of data bytes is invalid\n";
+  }
 
   return sstr.str();
 }

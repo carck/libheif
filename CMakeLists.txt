@@ -1,6 +1,6 @@
 cmake_minimum_required (VERSION 3.16.3) # Oldest Ubuntu LTS (20.04 currently)
 
-project(libheif LANGUAGES C CXX VERSION 1.17.3)
+project(libheif LANGUAGES C CXX VERSION 1.17.6)
 
 # compatibility_version is never allowed to be decreased for any specific SONAME.
 # Libtool in the libheif-1.15.1 release had set it to 17.0.0, so we have to use this for the v1.x.y versions.
@@ -174,7 +174,7 @@ endif()
 
 plugin_option(FFMPEG_DECODER "FFMPEG HEVC decoder (HW accelerated)" OFF OFF)
 if (WITH_FFMPEG_DECODER)
-    find_package(FFMPEG COMPONENTS avcodec)
+    find_package(FFMPEG COMPONENTS avcodec avutil)
 endif ()
 
 # uncompressed
@@ -234,6 +234,9 @@ endif()
 if (X265_FOUND AND NOT (PLUGIN_LOADING_SUPPORTED_AND_ENABLED AND WITH_X265_PLUGIN))
     list(APPEND REQUIRES_PRIVATE "x265")
 endif()
+if (KVAZAAR_FOUND AND NOT (PLUGIN_LOADING_SUPPORTED_AND_ENABLED AND WITH_KVAZAAR_PLUGIN))
+    list(APPEND REQUIRES_PRIVATE "kvazaar")
+endif()
 if ((AOM_DECODER_FOUND AND NOT (PLUGIN_LOADING_SUPPORTED_AND_ENABLED AND WITH_AOM_DECODER_PLUGIN))
         OR (AOM_ENCODER_FOUND AND NOT (PLUGIN_LOADING_SUPPORTED_AND_ENABLED AND WITH_AOM_ENCODER_PLUGIN)))
     list(APPEND REQUIRES_PRIVATE "aom")
@@ -259,6 +262,10 @@ endif()
 if (LIBSHARPYUV_FOUND)
     list(APPEND REQUIRES_PRIVATE "libsharpyuv")
 endif()
+if (WITH_DEFLATE_HEADER_COMPRESSION)
+    list(APPEND REQUIRES_PRIVATE "zlib")
+endif()
+
 list(JOIN REQUIRES_PRIVATE " " REQUIRES_PRIVATE)
 
 include(CheckCXXSymbolExists)

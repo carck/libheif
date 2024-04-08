@@ -489,6 +489,7 @@ struct heif_error svt_get_parameter_string(void* encoder_raw, const char* name,
         assert(false);
         return heif_error_invalid_parameter_value;
     }
+    return heif_error_ok;
   }
 
   return heif_error_unsupported_parameter;
@@ -645,7 +646,7 @@ struct heif_error svt_encode_image(void* encoder_raw, const struct heif_image* i
 
   if (nclx) {
     svt_config.color_description_present_flag = true;
-#if SVT_AV1_VERSION_MAJOR == 1
+#if SVT_AV1_VERSION_MAJOR >= 1
     svt_config.color_primaries = static_cast<EbColorPrimaries>(nclx->color_primaries);
     svt_config.transfer_characteristics = static_cast<EbTransferCharacteristics>(nclx->transfer_characteristics);
     svt_config.matrix_coefficients = static_cast<EbMatrixCoefficients>(nclx->matrix_coefficients);
@@ -674,7 +675,7 @@ struct heif_error svt_encode_image(void* encoder_raw, const struct heif_image* i
   svt_config.logical_processors = encoder->threads;
 
   // disable 2-pass
-  svt_config.rc_stats_buffer = (SvtAv1FixedBuf) {nullptr, 0};
+  svt_config.rc_stats_buffer = SvtAv1FixedBuf {nullptr, 0};
 
   svt_config.rate_control_mode = 0; // constant rate factor
   //svt_config.enable_adaptive_quantization = 0;   // 2 is CRF (the default), 0 would be CQP
