@@ -648,6 +648,18 @@ func (h *ImageHandle) GetICCProfle() ([]byte, error) {
 	return nil, nil
 }
 
+func (h *ImageHandle) GetExif() ([]byte, error) {
+	var exif_id C.heif_item_id;
+	n := C.heif_image_handle_get_list_of_metadata_block_IDs(h.handle, "Exif", unsafe.Pointer(&exif_id), C.int(1))
+	if (n == 1) {
+	  exifSize := C.heif_image_handle_get_metadata_size(h.handle, exif_id);
+	  data := make([]byte, int(exifSize))
+	  err := C.heif_image_handle_get_metadata(h.handle, exif_id, unsafe.Pointer(&data[0]));
+	  return data, convertHeifError(err)	
+	}
+	return nil, nil
+}
+
 // --- Image
 
 type DecodingOptions struct {
