@@ -1,5 +1,5 @@
 /*
-  libheif example application "convert".
+  libheif example application.
 
   MIT License
 
@@ -32,7 +32,7 @@
 #include <limits>
 
 #include "encoder_jpeg.h"
-#include "libheif/exif.h"
+#include "exif.h"
 
 #define JPEG_XMP_MARKER  (JPEG_APP0+1)  /* JPEG marker code for XMP */
 #define JPEG_XMP_MARKER_ID "http://ns.adobe.com/xap/1.0/"
@@ -201,6 +201,7 @@ bool JpegEncoder::Encode(const struct heif_image_handle* handle,
 
       // libheif by default normalizes the image orientation, so that we have to set the EXIF Orientation to "Horizontal (normal)"
       modify_exif_orientation_tag_if_it_exists(ptr, size32, 1);
+      overwrite_exif_image_size_if_it_exists(ptr, size32, cinfo.image_width, cinfo.image_height);
 
       // We have to limit the size for the memcpy, otherwise GCC warns that we exceed the maximum size.
       if (size>0x1000000) {

@@ -144,7 +144,13 @@ public:
 
   uint16_t read16();
 
+  int16_t read16s();
+
   uint32_t read32();
+
+  int32_t read32s();
+
+  uint64_t read64();
 
   std::string read_string();
 
@@ -236,6 +242,8 @@ public:
 
   int get_bits(int n);
 
+  uint8_t get_bits8(int n);
+
   int get_bits_fast(int n);
 
   int peek_bits(int n);
@@ -281,7 +289,11 @@ public:
 
   void write16(uint16_t);
 
+  void write16s(int16_t);
+
   void write32(uint32_t);
+
+  void write32s(int32_t);
 
   void write64(uint64_t);
 

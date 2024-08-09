@@ -15,7 +15,7 @@ For AVIF, libaom, dav1d, svt-av1, or rav1e are used as codecs.
 
 libheif has support for:
 
-* HEIC, AVIF, JPEG-in-HEIF, JPEG2000, uncompressed (ISO/IEC 23001-17:2023)
+* HEIC, AVIF, VVC, JPEG-in-HEIF, JPEG2000, uncompressed (ISO/IEC 23001-17:2023)
 * alpha channels, depth maps, thumbnails, auxiliary images
 * multiple images in a file
 * HDR images, correct color transform according to embedded color profiles
@@ -26,18 +26,18 @@ libheif has support for:
 * decoding of files while downloading (e.g. extract image size before file has been completely downloaded)
 
 Supported codecs:
-| Format       |  Decoders        |  Encoders           |
-|:-------------|:----------------:|:-------------------:|
-| HEIC         | libde265, ffmpeg | x265, kvazaar       |
-| AVIF         | AOM, dav1d       | AOM, rav1e, svt-av1 |
-| JPEG         | libjpeg(-turbo)  | libjpeg(-turbo)     |
-| JPEG2000     | OpenJPEG         | OpenJPEG            |
-| uncompressed | built-in         | built-in            |
+| Format       |  Decoders           |  Encoders                    |
+|:-------------|:-------------------:|:----------------------------:|
+| HEIC         | libde265, ffmpeg    | x265, kvazaar                |
+| AVIF         | AOM, dav1d          | AOM, rav1e, svt-av1          |
+| VVC          | vvdec               | vvenc, uvg266                |
+| JPEG         | libjpeg(-turbo)     | libjpeg(-turbo)              |
+| JPEG2000     | OpenJPEG            | OpenJPEG                     |
+| uncompressed | built-in            | built-in                     |
 
 ## API
 
 The library has a C API for easy integration and wide language support.
-Note that the API is still work in progress and may still change.
 
 The decoder automatically supports both HEIF and AVIF through the same API. No changes are required to existing code to support AVIF.
 The encoder can be switched between HEIF and AVIF simply by setting `heif_compression_HEVC` or `heif_compression_AV1`
@@ -155,13 +155,13 @@ For each codec, there are two configuration variables:
 * `WITH_{codec}_PLUGIN`: when enabled, the codec is compiled as a separate plugin.
 
 In order to use dynamic plugins, also make sure that `ENABLE_PLUGIN_LOADING` is enabled.
-The placeholder `{codec}` can have these values: `LIBDE265`, `X265`, `AOM_DECODER`, `AOM_ENCODER`, `SvtEnc`, `DAV1D`, `FFMPEG_DECODER`, `JPEG_DECODER`, `JPEG_ENCODER`, `KVAZAAR`, `OpenJPEG_DECODER`, `OpenJPEG_ENCODER`.
+The placeholder `{codec}` can have these values: `LIBDE265`, `X265`, `AOM_DECODER`, `AOM_ENCODER`, `SvtEnc`, `DAV1D`, `FFMPEG_DECODER`, `JPEG_DECODER`, `JPEG_ENCODER`, `KVAZAAR`, `OpenJPEG_DECODER`, `OpenJPEG_ENCODER`, `OPENJPH_ENCODER`, `VVDEC`, `VVENC`, `UVG266`.
 
 Further options are:
 
-* `WITH_UNCOMPRESSED_CODEC`: enable support for uncompressed images according to ISO/IEC 23001-17:2023. This is *experimental*
-   and not available as a dynamic plugin.
-* `WITH_DEFLATE_HEADER_COMPRESSION`: enables support for compressed metadata. When enabled, it adds a dependency to `zlib`.
+* `WITH_UNCOMPRESSED_CODEC`: enable support for uncompressed images according to ISO/IEC 23001-17:2024. This is *experimental*
+   and not available as a dynamic plugin. When enabled, it adds a dependency to `zlib`, and optionally will use `brotli`.
+* `WITH_HEADER_COMPRESSION`: enables support for compressed metadata. When enabled, it adds a dependency to `zlib`.
    Note that header compression is not widely supported yet.
 * `WITH_LIBSHARPYUV`: enables high-quality YCbCr/RGB color space conversion algorithms (requires `libsharpyuv`,
    e.g. from the `third-party` directory).
@@ -170,7 +170,7 @@ Further options are:
 * `PLUGIN_DIRECTORY`: the directory where libheif will search for dynamic plugins when the environment
   variable `LIBHEIF_PLUGIN_PATH` is not set.
 * `WITH_REDUCED_VISIBILITY`: only export those symbols into the library that are public API.
-  Has to be turned off for running the tests.
+  Has to be turned off for running some tests.
 
 ### macOS
 
@@ -305,7 +305,7 @@ This is `libheif` running in JavaScript in your browser.
 ## Example programs
 
 Some example programs are provided in the `examples` directory.
-The program `heif-convert` converts all images stored in an HEIF/AVIF file to JPEG or PNG.
+The program `heif-dec` converts all images stored in an HEIF/AVIF file to JPEG or PNG.
 `heif-enc` lets you convert JPEG files to HEIF/AVIF.
 The program `heif-info` is a simple, minimal decoder that dumps the file structure to the console.
 
@@ -313,7 +313,7 @@ For example convert `example.heic` to JPEGs and one of the JPEGs back to HEIF:
 
 ```sh
 cd examples/
-./heif-convert example.heic example.jpeg
+./heif-dec example.heic example.jpeg
 ./heif-enc example-1.jpeg -o example.heif
 ```
 
@@ -377,5 +377,5 @@ The sample applications are distributed under the terms of the MIT License.
 See COPYING for more details.
 
 Copyright (c) 2017-2020 Struktur AG</br>
-Copyright (c) 2017-2023 Dirk Farin</br>
+Copyright (c) 2017-2024 Dirk Farin</br>
 Contact: Dirk Farin <dirk.farin@gmail.com>

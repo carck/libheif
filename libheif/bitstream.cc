@@ -72,7 +72,7 @@ StreamReader_memory::StreamReader_memory(const uint8_t* data, size_t size, bool 
 {
   if (copy) {
     m_owned_data = new uint8_t[m_length];
-    memcpy(m_owned_data, data, m_length);
+    memcpy(m_owned_data, data, size);
 
     m_data = m_owned_data;
   }
@@ -200,6 +200,19 @@ uint16_t BitstreamRange::read16()
 }
 
 
+int16_t BitstreamRange::read16s()
+{
+  uint16_t v = read16();
+
+  if (v & 0x8000) {
+    return -static_cast<int16_t>((~v) & 0x7fff) -1;
+  }
+  else {
+    return static_cast<int16_t>(v);
+  }
+}
+
+
 uint32_t BitstreamRange::read32()
 {
   if (!prepare_read(4)) {
@@ -220,6 +233,44 @@ uint32_t BitstreamRange::read32()
                      (buf[1] << 16) |
                      (buf[2] << 8) |
                      (buf[3]));
+}
+
+uint64_t BitstreamRange::read64()
+{
+  if (!prepare_read(8)) {
+    return 0;
+  }
+
+  uint8_t buf[8];
+
+  auto istr = get_istream();
+  bool success = istr->read((char*) buf, 8);
+
+  if (!success) {
+    set_eof_while_reading();
+    return 0;
+  }
+
+  return (uint64_t) (((uint64_t)buf[0] << 56) |
+                     ((uint64_t)buf[1] << 48) |
+                     ((uint64_t)buf[2] << 40) |
+                     ((uint64_t)buf[3] << 32) |
+                     ((uint64_t)buf[4] << 24) |
+                     ((uint64_t)buf[5] << 16) |
+                     ((uint64_t)buf[6] << 8) |
+                     ((uint64_t)buf[7]));
+}
+
+int32_t BitstreamRange::read32s()
+{
+  uint32_t v = read32();
+
+  if (v & 0x80000000) {
+    return -static_cast<int32_t>((~v) & 0x7fffffff) -1;
+  }
+  else {
+    return static_cast<int32_t>(v);
+  }
 }
 
 
@@ -350,6 +401,14 @@ int BitReader::get_bits(int n)
 
   return (int) val;
 }
+
+
+uint8_t BitReader::get_bits8(int n)
+{
+  assert(n>0 && n <= 8);
+  return static_cast<uint8_t>(get_bits(n));
+}
+
 
 int BitReader::get_bits_fast(int n)
 {
@@ -501,6 +560,20 @@ void StreamWriter::write16(uint16_t v)
 }
 
 
+void StreamWriter::write16s(int16_t v16s)
+{
+  uint16_t v;
+  if (v16s >= 0) {
+    v = static_cast<uint16_t>(v16s);
+  }
+  else {
+    v = ~static_cast<uint16_t>((-v16s-1));
+  }
+
+  write16(v);
+}
+
+
 void StreamWriter::write32(uint32_t v)
 {
   size_t required_size = m_position + 4;
@@ -513,6 +586,20 @@ void StreamWriter::write32(uint32_t v)
   m_data[m_position++] = uint8_t((v >> 16) & 0xFF);
   m_data[m_position++] = uint8_t((v >> 8) & 0xFF);
   m_data[m_position++] = uint8_t(v & 0xFF);
+}
+
+
+void StreamWriter::write32s(int32_t v32s)
+{
+  uint32_t v;
+  if (v32s >= 0) {
+    v = static_cast<uint32_t>(v32s);
+  }
+  else {
+    v = ~static_cast<uint32_t>((-v32s-1));
+  }
+
+  write32(v);
 }
 
 
