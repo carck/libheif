@@ -365,6 +365,10 @@ int UncompressedImageCodec::get_chroma_bits_per_pixel_from_configuration_unci(co
   std::shared_ptr<Box_uncC> uncC_box = std::dynamic_pointer_cast<Box_uncC>(box1);
   auto box2 = ipco->get_property_for_item_ID(imageID, ipma, fourcc("cmpd"));
   std::shared_ptr<Box_cmpd> cmpd_box = std::dynamic_pointer_cast<Box_cmpd>(box2);
+  if (uncC_box && uncC_box->get_version() == 1) {
+    // All of the version 1 cases are 8 bit
+    return 8;
+  }
   if (!uncC_box || !cmpd_box) {
     return -1;
   }
@@ -421,16 +425,16 @@ static bool map_uncompressed_component_to_channel(const std::shared_ptr<Box_cmpd
     } else if (uncC->get_profile() == fourcc("rgba")) {
       switch (component_index) {
       case 0:
-        *channel = heif_channel_Alpha;
-        return true;
-      case 1:
         *channel = heif_channel_R;
         return true;
-      case 2:
+      case 1:
         *channel = heif_channel_G;
         return true;
-        case 3:
+      case 2:
         *channel = heif_channel_B;
+        return true;
+      case 3:
+        *channel = heif_channel_Alpha;
         return true;
       }
     } else if (uncC->get_profile() == fourcc("abgr")) {
@@ -916,7 +920,7 @@ Error UncompressedImageCodec::decode_uncompressed_image(const HeifContext* conte
   std::shared_ptr<Box_cmpd> cmpd;
   std::shared_ptr<Box_uncC> uncC;
   std::shared_ptr<Box_cmpC> cmpC;
-  std::shared_ptr<Box_icbr> icbr;
+  std::shared_ptr<Box_icef> icef;
 
   for (const auto& prop : item_properties) {
     auto ispe = std::dynamic_pointer_cast<Box_ispe>(prop);
@@ -946,9 +950,9 @@ Error UncompressedImageCodec::decode_uncompressed_image(const HeifContext* conte
       cmpC = maybe_cmpC;
     }
 
-    auto maybe_icbr = std::dynamic_pointer_cast<Box_icbr>(prop);
-    if (maybe_icbr) {
-      icbr = maybe_icbr;
+    auto maybe_icef = std::dynamic_pointer_cast<Box_icef>(prop);
+    if (maybe_icef) {
+      icef= maybe_icef;
     }
 
   }
@@ -1258,10 +1262,10 @@ Error UncompressedImageCodec::encode_uncompressed_image(const std::shared_ptr<He
     {
       int src_stride;
       uint8_t* src_data = src_image->get_plane(channel, &src_stride);
-      uint64_t out_size = src_image->get_height() * src_image->get_width();
+      uint64_t out_size = src_image->get_height(channel) * src_image->get_width(channel);
       data.resize(data.size() + out_size);
-      for (int y = 0; y < src_image->get_height(); y++) {
-        memcpy(data.data() + offset + y * src_image->get_width(), src_data + src_stride * y, src_image->get_width());
+      for (int y = 0; y < src_image->get_height(channel); y++) {
+        memcpy(data.data() + offset + y * src_image->get_width(channel), src_data + src_stride * y, src_image->get_width(channel));
       }
       offset += out_size;
     }
