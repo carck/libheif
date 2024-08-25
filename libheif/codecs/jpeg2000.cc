@@ -19,6 +19,7 @@
  */
 
 #include "jpeg2000.h"
+#include "libheif/api_structs.h"
 #include <cstdint>
 #include <iostream>
 #include <stdio.h>
@@ -480,4 +481,109 @@ heif_chroma JPEG2000MainHeader::get_chroma_format() const
   }
 
   return heif_chroma_undefined;
+}
+
+
+Result<ImageItem::CodedImageData> ImageItem_JPEG2000::encode(const std::shared_ptr<HeifPixelImage>& image,
+                                                             struct heif_encoder* encoder,
+                                                             const struct heif_encoding_options& options,
+                                                             enum heif_image_input_class input_class)
+{
+  CodedImageData codedImageData;
+
+  heif_image c_api_image;
+  c_api_image.image = image;
+
+  encoder->plugin->encode_image(encoder->encoder, &c_api_image, input_class);
+
+  // get compressed data
+  for (;;) {
+    uint8_t* data;
+    int size;
+
+    encoder->plugin->get_compressed_data(encoder->encoder, &data, &size, nullptr);
+
+    if (data == nullptr) {
+      break;
+    }
+
+    codedImageData.append(data, size);
+  }
+
+  // add 'j2kH' property
+  auto j2kH = std::make_shared<Box_j2kH>();
+
+  // add 'cdef' to 'j2kH'
+  auto cdef = std::make_shared<Box_cdef>();
+  cdef->set_channels(image->get_colorspace());
+  j2kH->append_child_box(cdef);
+
+  codedImageData.properties.push_back(j2kH);
+
+  return codedImageData;
+}
+
+
+Result<std::vector<uint8_t>> ImageItem_JPEG2000::read_bitstream_configuration_data(heif_item_id itemId) const
+{
+  std::vector<uint8_t> data;
+
+  // --- get properties for this image
+
+  std::vector<std::shared_ptr<Box>> properties;
+  auto ipma_box = get_file()->get_ipma_box();
+  Error err = get_file()->get_ipco_box()->get_properties_for_item_ID(itemId, ipma_box, properties);
+  if (err) {
+    return err;
+  }
+
+  // --- get codec configuration
+
+  std::shared_ptr<Box_j2kH> j2kH_box;
+  for (auto &prop : properties)
+  {
+    if (prop->get_short_type() == fourcc("j2kH"))
+    {
+      j2kH_box = std::dynamic_pointer_cast<Box_j2kH>(prop);
+      if (j2kH_box)
+      {
+        break;
+      }
+    }
+  }
+
+  if (!j2kH_box)
+  {
+    // TODO - Correctly Find the j2kH box
+    //  return Error(heif_error_Invalid_input,
+    //               heif_suberror_Unspecified);
+  }
+  // else if (!j2kH_box->get_headers(data)) {
+  //   return Error(heif_error_Invalid_input,
+  //                heif_suberror_No_item_data);
+  // }
+
+  return data;
+}
+
+
+int ImageItem_JPEG2000::get_luma_bits_per_pixel() const
+{
+  JPEG2000MainHeader header;
+  Error err = header.parseHeader(*get_file(), get_id());
+  if (err) {
+    return -1;
+  }
+  return header.get_precision(0);
+}
+
+
+int ImageItem_JPEG2000::get_chroma_bits_per_pixel() const
+{
+  JPEG2000MainHeader header;
+  Error err = header.parseHeader(*get_file(), get_id());
+  if (err) {
+    return -1;
+  }
+  return header.get_precision(1);
 }

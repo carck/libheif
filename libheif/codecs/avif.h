@@ -30,7 +30,7 @@
 #include "libheif/heif.h"
 #include "box.h"
 #include "error.h"
-
+#include <codecs/image_item.h>
 
 
 class Box_av1C : public Box
@@ -40,6 +40,8 @@ public:
   {
     set_short_type(fourcc("av1C"));
   }
+
+  bool is_essential() const override { return true; }
 
   struct configuration
   {
@@ -149,5 +151,34 @@ Error fill_av1C_configuration(Box_av1C::configuration* inout_config, const std::
 
 bool fill_av1C_configuration_from_stream(Box_av1C::configuration* out_config, const uint8_t* data, int dataSize);
 
+
+class ImageItem_AVIF : public ImageItem
+{
+public:
+  ImageItem_AVIF(HeifContext* ctx, heif_item_id id) : ImageItem(ctx, id) {}
+
+  ImageItem_AVIF(HeifContext* ctx) : ImageItem(ctx) {}
+
+  const char* get_infe_type() const override { return "av01"; }
+
+  const char* get_auxC_alpha_channel_type() const override { return "urn:mpeg:mpegB:cicp:systems:auxiliary:alpha"; }
+
+  const heif_color_profile_nclx* get_forced_output_nclx() const override { return nullptr; }
+
+  heif_compression_format get_compression_format() const override { return heif_compression_AV1; }
+
+  int get_luma_bits_per_pixel() const override;
+
+  int get_chroma_bits_per_pixel() const override;
+
+
+  Result<CodedImageData> encode(const std::shared_ptr<HeifPixelImage>& image,
+                                struct heif_encoder* encoder,
+                                const struct heif_encoding_options& options,
+                                enum heif_image_input_class input_class) override;
+
+protected:
+  Result<std::vector<uint8_t>> read_bitstream_configuration_data(heif_item_id itemId) const override;
+};
 
 #endif

@@ -31,6 +31,9 @@
 #include "error.h"
 #include "bitstream.h"
 #include "init.h"
+#include "codecs/grid.h"
+#include "codecs/overlay.h"
+#include "codecs/tild.h"
 #include <set>
 #include <limits>
 
@@ -545,7 +548,7 @@ heif_error heif_context_get_primary_image_handle(heif_context* ctx, heif_image_h
     return err.error_struct(ctx->context.get());
   }
 
-  std::shared_ptr<HeifContext::Image> primary_image = ctx->context->get_primary_image();
+  std::shared_ptr<ImageItem> primary_image = ctx->context->get_primary_image();
 
   // It is a requirement of an HEIF file there is always a primary image.
   // If there is none, an error is generated when loading the file.
@@ -570,7 +573,7 @@ struct heif_error heif_context_get_primary_image_ID(struct heif_context* ctx, he
                  heif_suberror_Null_pointer_argument).error_struct(ctx->context.get());
   }
 
-  std::shared_ptr<HeifContext::Image> primary = ctx->context->get_primary_image();
+  std::shared_ptr<ImageItem> primary = ctx->context->get_primary_image();
   if (!primary) {
     return Error(heif_error_Invalid_input,
                  heif_suberror_No_or_invalid_primary_item).error_struct(ctx->context.get());
@@ -584,7 +587,7 @@ struct heif_error heif_context_get_primary_image_ID(struct heif_context* ctx, he
 
 int heif_context_is_top_level_image_ID(struct heif_context* ctx, heif_item_id id)
 {
-  const std::vector<std::shared_ptr<HeifContext::Image>> images = ctx->context->get_top_level_images();
+  const std::vector<std::shared_ptr<ImageItem>> images = ctx->context->get_top_level_images();
 
   for (const auto& img : images) {
     if (img->get_id() == id) {
@@ -613,7 +616,7 @@ int heif_context_get_list_of_top_level_image_IDs(struct heif_context* ctx,
 
   // fill in ID values into output array
 
-  const std::vector<std::shared_ptr<HeifContext::Image>> imgs = ctx->context->get_top_level_images();
+  const std::vector<std::shared_ptr<ImageItem>> imgs = ctx->context->get_top_level_images();
   int n = (int) std::min(count, (int) imgs.size());
   for (int i = 0; i < n; i++) {
     ID_array[i] = imgs[i]->get_id();
@@ -853,11 +856,237 @@ struct heif_context* heif_image_handle_get_context(const struct heif_image_handl
 }
 
 
+struct heif_image_tiling heif_image_handle_get_image_tiling(const struct heif_image_handle* handle)
+{
+  struct heif_image_tiling tiling{};
+  if (!handle) {
+    return tiling;
+  }
+
+  std::shared_ptr<ImageItem_Grid> gridItem = std::dynamic_pointer_cast<ImageItem_Grid>(handle->image);
+  if (gridItem) {
+    return gridItem->get_heif_image_tiling();
+  }
+
+  std::shared_ptr<ImageItem_Tild> tildItem = std::dynamic_pointer_cast<ImageItem_Tild>(handle->image);
+  if (tildItem) {
+    return tildItem->get_heif_image_tiling();
+  }
+
+  return tiling;
+}
+
+
+heif_item_id heif_image_handle_get_image_tile_id(const struct heif_image_handle* handle, uint32_t tile_x, uint32_t tile_y)
+{
+  if (!handle) {
+    return 0;
+  }
+
+  std::shared_ptr<ImageItem_Grid> gridItem = std::dynamic_pointer_cast<ImageItem_Grid>(handle->image);
+  if (!gridItem) {
+    return 0;
+  }
+
+  const ImageGrid& gridspec = gridItem->get_grid_spec();
+  if (tile_x >= gridspec.get_columns() || tile_y >= gridspec.get_rows()) {
+    return 0;
+  }
+
+  return gridItem->get_grid_tiles()[tile_y * gridspec.get_columns() + tile_x];
+}
+
+
+struct heif_error heif_image_handle_get_tile_size(const struct heif_image_handle* handle,
+                                                  uint32_t* tile_width, uint32_t* tile_height)
+{
+  if (!handle) {
+    return error_null_parameter;
+  }
+
+
+  // --- 'grid' image
+
+  uint32_t w,h;
+
+  if (std::shared_ptr<ImageItem_Grid> gridItem = std::dynamic_pointer_cast<ImageItem_Grid>(handle->image)) {
+    gridItem->get_tile_size(w,h);
+  }
+  else if (std::shared_ptr<ImageItem_Tild> tildItem = std::dynamic_pointer_cast<ImageItem_Tild>(handle->image)) {
+    tildItem->get_tile_size(w,h);
+  }
+  else {
+    // return whole image size (the image is the only tile)
+
+    w = handle->image->get_width();
+    h = handle->image->get_height();
+  }
+
+  if (tile_width) {
+    *tile_width = w;
+  }
+
+  if (tile_height) {
+    *tile_height = h;
+  }
+
+  return heif_error_success;
+}
+
+
+struct heif_entity_group* heif_context_get_entity_groups(const struct heif_context* ctx,
+                                                         uint32_t type_filter, uint32_t item_filter,
+                                                         int* out_num_groups)
+{
+  std::shared_ptr<Box_grpl> grplBox = ctx->context->get_heif_file()->get_grpl_box();
+  if (!grplBox) {
+    *out_num_groups = 0;
+    return nullptr;
+  }
+
+  std::vector<std::shared_ptr<Box>> all_entity_group_boxes = grplBox->get_all_child_boxes();
+  if (all_entity_group_boxes.empty()) {
+    *out_num_groups = 0;
+    return nullptr;
+  }
+
+  // --- filter groups
+
+  std::vector<std::shared_ptr<Box_EntityToGroup>> entity_group_boxes;
+  for (auto& group : all_entity_group_boxes) {
+    if (type_filter != 0 && group->get_short_type() != type_filter) {
+      continue;
+    }
+
+    auto groupBox = std::dynamic_pointer_cast<Box_EntityToGroup>(group);
+    const std::vector<heif_item_id>& items = groupBox->get_item_ids();
+
+    if (item_filter != 0 && std::all_of(items.begin(), items.end(), [item_filter](heif_item_id item) {
+      return item != item_filter;
+    })) {
+      continue;
+    }
+
+    entity_group_boxes.emplace_back(groupBox);
+  }
+
+  // --- convert to C structs
+
+  auto* groups = new heif_entity_group[entity_group_boxes.size()];
+  for (size_t i = 0; i < entity_group_boxes.size(); i++) {
+    const auto& groupBox = entity_group_boxes[i];
+    const std::vector<heif_item_id>& items = groupBox->get_item_ids();
+
+    groups[i].entity_group_id = groupBox->get_group_id();
+    groups[i].entity_group_type = groupBox->get_short_type();
+    groups[i].entities = (items.empty() ? nullptr : new heif_item_id[items.size()]);
+    groups[i].num_entities = static_cast<uint32_t>(items.size());
+
+    if (groups[i].entities) { // avoid clang static analyzer false positive
+      for (size_t k = 0; k < items.size(); k++) {
+        groups[i].entities[k] = items[k];
+      }
+    }
+  }
+
+  *out_num_groups = static_cast<int>(entity_group_boxes.size());
+  return groups;
+}
+
+
+void heif_entity_group_release(struct heif_entity_group* grp, int num_groups)
+{
+  for (int i=0;i<num_groups;i++) {
+    delete[] grp[i].entities;
+  }
+
+  delete[] grp;
+}
+
+
+struct heif_error heif_context_add_pyramid_entity_group(struct heif_context* ctx,
+                                                        uint16_t tile_width,
+                                                        uint16_t tile_height,
+                                                        uint32_t num_layers,
+                                                        const heif_pyramid_layer_info* in_layers,
+                                                        heif_item_id* out_group_id)
+{
+  if (!in_layers) {
+    return error_null_parameter;
+  }
+
+  if (num_layers == 0) {
+    return {heif_error_Usage_error, heif_suberror_Invalid_parameter_value, "Number of layers cannot be 0."};
+  }
+
+  std::vector<heif_pyramid_layer_info> layers(num_layers);
+  for (uint32_t i=0;i<num_layers;i++) {
+    layers[i] = in_layers[i];
+  }
+
+  Result<heif_item_id> result = ctx->context->add_pyramid_group(tile_width, tile_height, layers);
+
+  if (result) {
+    if (out_group_id) {
+      *out_group_id = result.value;
+    }
+    return heif_error_success;
+  }
+  else {
+    return result.error.error_struct(ctx->context.get());
+  }
+}
+
+
+struct heif_pyramid_layer_info* heif_context_get_pyramid_entity_group_info(struct heif_context* ctx, heif_entity_group_id id, int* out_num_layers)
+{
+  if (!out_num_layers) {
+    return nullptr;
+  }
+
+  std::shared_ptr<Box_EntityToGroup> groupBox = ctx->context->get_heif_file()->get_entity_group(id);
+  if (!groupBox) {
+    return nullptr;
+  }
+
+  const auto pymdBox = std::dynamic_pointer_cast<Box_pymd>(groupBox);
+  if (!pymdBox) {
+    return nullptr;
+  }
+
+  const std::vector<Box_pymd::LayerInfo> pymd_layers = pymdBox->get_layers();
+  if (pymd_layers.empty()) {
+    return nullptr;
+  }
+
+  auto items = pymdBox->get_item_ids();
+  assert(items.size() == pymd_layers.size());
+
+  auto* layerInfo = new heif_pyramid_layer_info[pymd_layers.size()];
+  for (size_t i=0; i<pymd_layers.size(); i++) {
+    layerInfo[i].layer_image_id = items[i];
+    layerInfo[i].layer_binning = pymd_layers[i].layer_binning;
+    layerInfo[i].tiles_in_layer_row = pymd_layers[i].tiles_in_layer_row_minus1 + 1;
+    layerInfo[i].tiles_in_layer_column = pymd_layers[i].tiles_in_layer_column_minus1 + 1;
+  }
+
+  *out_num_layers = static_cast<int>(pymd_layers.size());
+
+  return layerInfo;
+}
+
+
+void heif_pyramid_layer_info_release(struct heif_pyramid_layer_info* infos)
+{
+  delete[] infos;
+}
+
+
 struct heif_error heif_image_handle_get_preferred_decoding_colorspace(const struct heif_image_handle* image_handle,
                                                                       enum heif_colorspace* out_colorspace,
                                                                       enum heif_chroma* out_chroma)
 {
-  Error err = image_handle->image->get_preferred_decoding_colorspace(out_colorspace, out_chroma);
+  Error err = image_handle->image->get_coded_image_colorspace(out_colorspace, out_chroma);
   if (err) {
     return err.error_struct(image_handle->image.get());
   }
@@ -909,7 +1138,7 @@ int heif_image_handle_get_depth_image_representation_info(const struct heif_imag
                                                           heif_item_id depth_image_id,
                                                           const struct heif_depth_representation_info** out)
 {
-  std::shared_ptr<HeifContext::Image> depth_image;
+  std::shared_ptr<ImageItem> depth_image;
 
   if (out) {
     if (handle->image->is_depth_channel()) {
@@ -1020,29 +1249,51 @@ void fill_default_decoding_options(heif_decoding_options& options)
 }
 
 
-static void copy_options(heif_decoding_options& options, const heif_decoding_options& input_options)
+// overwrite the (possibly lower version) input options over the default options
+static heif_decoding_options normalize_options(const heif_decoding_options* input_options)
 {
-  switch (input_options.version) {
-    case 5:
-      options.color_conversion_options = input_options.color_conversion_options;
-      // fallthrough
-    case 4:
-      options.decoder_id = input_options.decoder_id;
-      // fallthrough
-    case 3:
-      options.strict_decoding = input_options.strict_decoding;
-      // fallthrough
-    case 2:
-      options.convert_hdr_to_8bit = input_options.convert_hdr_to_8bit;
-      // fallthrough
-    case 1:
-      options.ignore_transformations = input_options.ignore_transformations;
+  heif_decoding_options options{};
+  fill_default_decoding_options(options);
 
-      options.start_progress = input_options.start_progress;
-      options.on_progress = input_options.on_progress;
-      options.end_progress = input_options.end_progress;
-      options.progress_user_data = input_options.progress_user_data;
+  if (input_options) {
+    switch (input_options->version) {
+      case 5:
+        options.color_conversion_options = input_options->color_conversion_options;
+        // fallthrough
+      case 4:
+        options.decoder_id = input_options->decoder_id;
+        // fallthrough
+      case 3:
+        options.strict_decoding = input_options->strict_decoding;
+        // fallthrough
+      case 2:
+        options.convert_hdr_to_8bit = input_options->convert_hdr_to_8bit;
+        // fallthrough
+      case 1:
+        options.ignore_transformations = input_options->ignore_transformations;
+
+        options.start_progress = input_options->start_progress;
+        options.on_progress = input_options->on_progress;
+        options.end_progress = input_options->end_progress;
+        options.progress_user_data = input_options->progress_user_data;
+    }
   }
+
+  return options;
+}
+
+
+void heif_color_conversion_options_set_default(struct heif_color_conversion_options* options)
+{
+  options->version = 1;
+#if HAVE_LIBSHARPYUV
+  options->preferred_chroma_downsampling_algorithm = heif_chroma_downsampling_sharp_yuv;
+#else
+  options->preferred_chroma_downsampling_algorithm = heif_chroma_downsampling_average;
+#endif
+
+  options->preferred_chroma_upsampling_algorithm = heif_chroma_upsampling_bilinear;
+  options->only_use_preferred_chroma_algorithm = true;
 }
 
 
@@ -1068,25 +1319,54 @@ struct heif_error heif_decode_image(const struct heif_image_handle* in_handle,
                                     heif_chroma chroma,
                                     const struct heif_decoding_options* input_options)
 {
-  std::shared_ptr<HeifPixelImage> img;
+  heif_item_id id = in_handle->image->get_id();
+
+  heif_decoding_options dec_options = normalize_options(input_options);
+
+  Result<std::shared_ptr<HeifPixelImage>> decodingResult = in_handle->context->decode_image(id,
+                                                                                            colorspace,
+                                                                                            chroma,
+                                                                                            dec_options,
+                                                                                            false, 0,0);
+  if (decodingResult.error.error_code != heif_error_Ok) {
+    return decodingResult.error.error_struct(in_handle->image.get());
+  }
+
+  std::shared_ptr<HeifPixelImage> img = decodingResult.value;
+
+  *out_img = new heif_image();
+  (*out_img)->image = std::move(img);
+
+  return Error::Ok.error_struct(in_handle->image.get());
+}
+
+
+// TODO: move this into the Context. But first, we also have to move heif_decode_image() into Context.
+struct heif_error heif_image_handle_decode_image_tile(const struct heif_image_handle* in_handle,
+                                                      struct heif_image** out_img,
+                                                      enum heif_colorspace colorspace,
+                                                      enum heif_chroma chroma,
+                                                      const struct heif_decoding_options* input_options,
+                                                      uint32_t x0, uint32_t y0)
+{
+  if (!in_handle) {
+    return error_null_parameter;
+  }
 
   heif_item_id id = in_handle->image->get_id();
 
-  heif_decoding_options dec_options;
-  fill_default_decoding_options(dec_options);
+  heif_decoding_options dec_options = normalize_options(input_options);
 
-  if (input_options != nullptr) {
-    // overwrite the (possibly lower version) input options over the default options
-    copy_options(dec_options, *input_options);
+  Result<std::shared_ptr<HeifPixelImage>> decodingResult = in_handle->context->decode_image(id,
+                                                                                            colorspace,
+                                                                                            chroma,
+                                                                                            dec_options,
+                                                                                            true, x0,y0);
+  if (decodingResult.error.error_code != heif_error_Ok) {
+    return decodingResult.error.error_struct(in_handle->image.get());
   }
 
-  Error err = in_handle->context->decode_image_user(id, img,
-                                                    colorspace,
-                                                    chroma,
-                                                    dec_options);
-  if (err.error_code != heif_error_Ok) {
-    return err.error_struct(in_handle->image.get());
-  }
+  std::shared_ptr<HeifPixelImage> img = decodingResult.value;
 
   *out_img = new heif_image();
   (*out_img)->image = std::move(img);
@@ -1281,15 +1561,26 @@ enum heif_chroma heif_image_get_chroma_format(const struct heif_image* img)
 }
 
 
+static int uint32_to_int(uint32_t v)
+{
+  if (v == 0 || v > static_cast<uint64_t>(std::numeric_limits<int>::max())) {
+    return -1;
+  }
+  else {
+    return static_cast<int>(v);
+  }
+}
+
+
 int heif_image_get_width(const struct heif_image* img, enum heif_channel channel)
 {
-  return img->image->get_width(channel);
+  return uint32_to_int(img->image->get_width(channel));
 }
 
 
 int heif_image_get_height(const struct heif_image* img, enum heif_channel channel)
 {
-  return img->image->get_height(channel);
+  return uint32_to_int(img->image->get_height(channel));
 }
 
 
@@ -1297,14 +1588,14 @@ int heif_image_get_primary_width(const struct heif_image* img)
 {
   if (img->image->get_colorspace() == heif_colorspace_RGB) {
     if (img->image->get_chroma_format() == heif_chroma_444) {
-      return img->image->get_width(heif_channel_G);
+      return uint32_to_int(img->image->get_width(heif_channel_G));
     }
     else {
-      return img->image->get_width(heif_channel_interleaved);
+      return uint32_to_int(img->image->get_width(heif_channel_interleaved));
     }
   }
   else {
-    return img->image->get_width(heif_channel_Y);
+    return uint32_to_int(img->image->get_width(heif_channel_Y));
   }
 }
 
@@ -1313,14 +1604,14 @@ int heif_image_get_primary_height(const struct heif_image* img)
 {
   if (img->image->get_colorspace() == heif_colorspace_RGB) {
     if (img->image->get_chroma_format() == heif_chroma_444) {
-      return img->image->get_height(heif_channel_G);
+      return uint32_to_int(img->image->get_height(heif_channel_G));
     }
     else {
-      return img->image->get_height(heif_channel_interleaved);
+      return uint32_to_int(img->image->get_height(heif_channel_interleaved));
     }
   }
   else {
-    return img->image->get_height(heif_channel_Y);
+    return uint32_to_int(img->image->get_height(heif_channel_Y));
   }
 }
 
@@ -1328,17 +1619,22 @@ int heif_image_get_primary_height(const struct heif_image* img)
 heif_error heif_image_crop(struct heif_image* img,
                            int left, int right, int top, int bottom)
 {
-  std::shared_ptr<HeifPixelImage> out_img;
+  uint32_t w = img->image->get_width();
+  uint32_t h = img->image->get_height();
 
-  int w = img->image->get_width();
-  int h = img->image->get_height();
-
-  Error err = img->image->crop(left, w - 1 - right, top, h - 1 - bottom, out_img);
-  if (err) {
-    return err.error_struct(img->image.get());
+  if (w==0 || w>0x7FFFFFFF ||
+      h==0 || h>0x7FFFFFFF) {
+    return heif_error{heif_error_Usage_error,
+                      heif_suberror_Invalid_image_size,
+                      "Image size exceeds maximum supported size"};
   }
 
-  img->image = out_img;
+  auto cropResult = img->image->crop(left, static_cast<int>(w) - 1 - right, top, static_cast<int>(h) - 1 - bottom);
+  if (cropResult.error) {
+    return cropResult.error.error_struct(img->image.get());
+  }
+
+  img->image = cropResult.value;
 
   return heif_error_success;
 }
@@ -1377,16 +1673,46 @@ struct heif_error heif_image_add_plane(struct heif_image* image,
 }
 
 
+struct heif_error heif_image_add_channel(struct heif_image* image,
+                                         enum heif_channel channel,
+                                         int width, int height,
+                                         heif_channel_datatype datatype, int bit_depth)
+{
+  if (!image->image->add_channel(channel, width, height, datatype, bit_depth)) {
+    struct heif_error err = {heif_error_Memory_allocation_error,
+                             heif_suberror_Unspecified,
+                             "Cannot allocate memory for image plane"};
+    return err;
+  }
+  else {
+    return heif_error_success;
+  }
+}
+
+
 const uint8_t* heif_image_get_plane_readonly(const struct heif_image* image,
                                              enum heif_channel channel,
                                              int* out_stride)
 {
+  if (!out_stride) {
+    return nullptr;
+  }
+
   if (!image || !image->image) {
     *out_stride = 0;
     return nullptr;
   }
 
-  return image->image->get_plane(channel, out_stride);
+  uint32_t stride;
+  const auto* p = image->image->get_plane(channel, &stride);
+
+  // TODO: use C++20 std::cmp_greater()
+  if (stride > static_cast<uint32_t>(std::numeric_limits<int>::max())) {
+    return nullptr;
+  }
+
+  *out_stride = static_cast<int>(stride);
+  return p;
 }
 
 
@@ -1394,13 +1720,113 @@ uint8_t* heif_image_get_plane(struct heif_image* image,
                               enum heif_channel channel,
                               int* out_stride)
 {
+  if (!out_stride) {
+    return nullptr;
+  }
+
   if (!image || !image->image) {
     *out_stride = 0;
     return nullptr;
   }
 
-  return image->image->get_plane(channel, out_stride);
+  uint32_t stride;
+  uint8_t* p = image->image->get_plane(channel, &stride);
+
+  // TODO: use C++20 std::cmp_greater()
+  if (stride > static_cast<uint32_t>(std::numeric_limits<int>::max())) {
+    return nullptr;
+  }
+
+  *out_stride = static_cast<int>(stride);
+  return p;
 }
+
+
+enum heif_channel_datatype heif_image_get_datatype(const struct heif_image* image, enum heif_channel channel)
+{
+  if (image == nullptr) {
+    return heif_channel_datatype_undefined;
+  }
+
+  return image->image->get_datatype(channel);
+}
+
+
+int heif_image_list_channels(struct heif_image* image,
+                             enum heif_channel** out_channels)
+{
+  if (!image || !out_channels) {
+    return 0;
+  }
+
+  auto channels = image->image->get_channel_set();
+
+  *out_channels = new heif_channel[channels.size()];
+  heif_channel* p = *out_channels;
+  for (heif_channel c : channels) {
+    *p++ = c;
+  }
+
+  assert(channels.size() < static_cast<size_t>(std::numeric_limits<int>::max()));
+
+  return static_cast<int>(channels.size());
+}
+
+
+void heif_channel_release_list(enum heif_channel** channels)
+{
+  delete[] channels;
+}
+
+
+
+#define heif_image_get_channel_X(name, type, datatype, bits) \
+const type* heif_image_get_channel_ ## name ## _readonly(const struct heif_image* image, \
+                                                         enum heif_channel channel, \
+                                                         uint32_t* out_stride) \
+{                                                            \
+  if (!image || !image->image) {                             \
+    *out_stride = 0;                                         \
+    return nullptr;                                          \
+  }                                                          \
+                                                             \
+  if (image->image->get_datatype(channel) != datatype) {     \
+    return nullptr;                                          \
+  }                                                          \
+  if (image->image->get_storage_bits_per_pixel(channel) != bits) {     \
+    return nullptr;                                          \
+  }                                                          \
+  return image->image->get_channel<type>(channel, out_stride); \
+}                                                            \
+                                                             \
+type* heif_image_get_channel_ ## name (struct heif_image* image, \
+                                       enum heif_channel channel, \
+                                       uint32_t* out_stride)      \
+{                                                            \
+  if (!image || !image->image) {                             \
+    *out_stride = 0;                                         \
+    return nullptr;                                          \
+  }                                                          \
+                                                             \
+  if (image->image->get_datatype(channel) != datatype) {     \
+    return nullptr;                                          \
+  }                                                          \
+  if (image->image->get_storage_bits_per_pixel(channel) != bits) {     \
+    return nullptr;                                          \
+  }                                                          \
+  return image->image->get_channel<type>(channel, out_stride); \
+}
+
+heif_image_get_channel_X(uint16, uint16_t, heif_channel_datatype_unsigned_integer, 16)
+heif_image_get_channel_X(uint32, uint32_t, heif_channel_datatype_unsigned_integer, 32)
+heif_image_get_channel_X(uint64, uint64_t, heif_channel_datatype_unsigned_integer, 64)
+heif_image_get_channel_X(int16, int16_t, heif_channel_datatype_signed_integer, 16)
+heif_image_get_channel_X(int32, int32_t, heif_channel_datatype_signed_integer, 32)
+heif_image_get_channel_X(int64, int64_t, heif_channel_datatype_signed_integer, 64)
+heif_image_get_channel_X(float32, float, heif_channel_datatype_floating_point, 32)
+heif_image_get_channel_X(float64, double, heif_channel_datatype_floating_point, 64)
+heif_image_get_channel_X(complex32, heif_complex32, heif_channel_datatype_complex_number, 64)
+heif_image_get_channel_X(complex64, heif_complex64, heif_channel_datatype_complex_number, 64)
 
 
 void heif_image_set_premultiplied_alpha(struct heif_image* image,
@@ -2825,7 +3251,7 @@ struct heif_error heif_context_encode_image(struct heif_context* ctx,
     }
   }
 
-  std::shared_ptr<HeifContext::Image> image;
+  std::shared_ptr<ImageItem> image;
   Error error;
 
 
@@ -2899,7 +3325,7 @@ struct heif_error heif_context_encode_grid(struct heif_context* ctx,
 
   // Encode Grid
   Error error;
-  std::shared_ptr<HeifContext::Image> out_grid;
+  std::shared_ptr<ImageItem> out_grid;
   error = ctx->context->encode_grid(pixel_tiles,
                                     rows, columns,
                                     encoder,
@@ -2924,6 +3350,142 @@ struct heif_error heif_context_encode_grid(struct heif_context* ctx,
 }
 
 
+struct heif_error heif_context_add_grid_image(struct heif_context* ctx,
+                                              uint32_t image_width,
+                                              uint32_t image_height,
+                                              uint32_t tile_columns,
+                                              uint32_t tile_rows,
+                                              const heif_item_id* image_ids,
+                                              struct heif_image_handle** out_grid_image_handle)
+{
+  if (!image_ids) {
+    return Error(heif_error_Usage_error,
+                 heif_suberror_Null_pointer_argument).error_struct(ctx->context.get());
+  }
+  else if (tile_rows == 0 || tile_columns == 0) {
+    return Error(heif_error_Usage_error,
+                 heif_suberror_Invalid_parameter_value).error_struct(ctx->context.get());
+  }
+  else if (tile_rows > 0xFFFF || tile_columns > 0xFFFF) {
+    return heif_error{heif_error_Usage_error,
+                      heif_suberror_Invalid_image_size,
+                      "Number of tile rows/columns may not exceed 65535"};
+  }
+
+
+  std::vector<heif_item_id> tiles(tile_rows * tile_columns);
+  for (uint64_t i = 0; i < tile_rows * tile_columns; i++) {
+    tiles[i] = image_ids[i];
+  }
+
+  std::shared_ptr<ImageItem> gridimage;
+  Error error = ctx->context->add_grid_item(tiles, image_width, image_height,
+                                            static_cast<uint16_t>(tile_rows),
+                                            static_cast<uint16_t>(tile_columns),
+                                            gridimage);
+
+  if (error != Error::Ok) {
+    return error.error_struct(ctx->context.get());
+  }
+
+  if (out_grid_image_handle) {
+    *out_grid_image_handle = new heif_image_handle;
+    (*out_grid_image_handle)->image = gridimage;
+    (*out_grid_image_handle)->context = ctx->context;
+  }
+
+  return heif_error_success;
+}
+
+
+struct heif_error heif_context_add_overlay_image(struct heif_context* ctx,
+                                                 uint32_t image_width,
+                                                 uint32_t image_height,
+                                                 uint16_t nImages,
+                                                 const heif_item_id* image_ids,
+                                                 int32_t* offsets,
+                                                 const uint16_t background_rgba[4],
+                                                 struct heif_image_handle** out_iovl_image_handle)
+{
+  if (!image_ids) {
+    return Error(heif_error_Usage_error,
+                 heif_suberror_Null_pointer_argument).error_struct(ctx->context.get());
+  }
+  else if (nImages == 0) {
+    return Error(heif_error_Usage_error,
+                 heif_suberror_Invalid_parameter_value).error_struct(ctx->context.get());
+  }
+
+
+  std::vector<heif_item_id> refs;
+  refs.insert(refs.end(), image_ids, image_ids + nImages);
+
+  ImageOverlay overlay;
+  overlay.set_canvas_size(image_width, image_height);
+
+  if (background_rgba) {
+    overlay.set_background_color(background_rgba);
+  }
+
+  for (uint16_t i=0;i<nImages;i++) {
+    overlay.add_image_on_top(image_ids[i],
+                             offsets ? offsets[2 * i] : 0,
+                             offsets ? offsets[2 * i + 1] : 0);
+  }
+
+  Result<std::shared_ptr<ImageItem_Overlay>> addImageResult = ctx->context->add_iovl_item(overlay);
+
+  if (addImageResult.error != Error::Ok) {
+    return addImageResult.error.error_struct(ctx->context.get());
+  }
+
+  std::shared_ptr<ImageItem> iovlimage = addImageResult.value;
+
+
+  if (out_iovl_image_handle) {
+    *out_iovl_image_handle = new heif_image_handle;
+    (*out_iovl_image_handle)->image = iovlimage;
+    (*out_iovl_image_handle)->context = ctx->context;
+  }
+
+  return heif_error_success;
+}
+
+
+struct heif_error heif_context_add_tild_image(struct heif_context* ctx,
+                                              const struct heif_tild_image_parameters* parameters,
+                                              const struct heif_encoding_options* options, // TODO: do we need this?
+                                              struct heif_image_handle** out_grid_image_handle)
+{
+  Result<std::shared_ptr<ImageItem_Tild>> gridImageResult;
+  gridImageResult = ctx->context->add_tild_item(parameters);
+
+  if (gridImageResult.error != Error::Ok) {
+    return gridImageResult.error.error_struct(ctx->context.get());
+  }
+
+  if (out_grid_image_handle) {
+    *out_grid_image_handle = new heif_image_handle;
+    (*out_grid_image_handle)->image = gridImageResult.value;
+    (*out_grid_image_handle)->context = ctx->context;
+  }
+
+  return heif_error_success;
+}
+
+
+struct heif_error heif_context_add_tild_image_tile(struct heif_context* ctx,
+                                                   struct heif_image_handle* tild_image,
+                                                   uint32_t tile_x, uint32_t tile_y,
+                                                   const struct heif_image* image,
+                                                   struct heif_encoder* encoder)
+{
+  Error err = ctx->context->add_tild_image_tile(tild_image->image->get_id(), tile_x, tile_y, image->image, encoder);
+  return err.error_struct(ctx->context.get());
+}
+
+
+
 struct heif_error heif_context_assign_thumbnail(struct heif_context* ctx,
                                                 const struct heif_image_handle* master_image,
                                                 const struct heif_image_handle* thumbnail_image)
@@ -2941,7 +3503,7 @@ struct heif_error heif_context_encode_thumbnail(struct heif_context* ctx,
                                                 int bbox_size,
                                                 struct heif_image_handle** out_image_handle)
 {
-  std::shared_ptr<HeifContext::Image> thumbnail_image;
+  std::shared_ptr<ImageItem> thumbnail_image;
 
   heif_encoding_options options;
   set_default_options(options);

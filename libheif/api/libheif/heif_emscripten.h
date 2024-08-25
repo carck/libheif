@@ -389,6 +389,7 @@ EMSCRIPTEN_BINDINGS(libheif) {
     .value("heif_suberror_Unsupported_image_type", heif_suberror_Unsupported_image_type)
     .value("heif_suberror_Unsupported_data_version", heif_suberror_Unsupported_data_version)
     .value("heif_suberror_Unsupported_generic_compression_method", heif_suberror_Unsupported_generic_compression_method)
+    .value("heif_suberror_Unsupported_essential_property", heif_suberror_Unsupported_essential_property)
     .value("heif_suberror_Unsupported_color_conversion", heif_suberror_Unsupported_color_conversion)
     .value("heif_suberror_Unsupported_item_construction_method", heif_suberror_Unsupported_item_construction_method)
     .value("heif_suberror_Unsupported_header_compression_method", heif_suberror_Unsupported_header_compression_method)
@@ -441,7 +442,8 @@ EMSCRIPTEN_BINDINGS(libheif) {
     .value("heif_colorspace_undefined", heif_colorspace_undefined)
     .value("heif_colorspace_YCbCr", heif_colorspace_YCbCr)
     .value("heif_colorspace_RGB", heif_colorspace_RGB)
-    .value("heif_colorspace_monochrome", heif_colorspace_monochrome);
+    .value("heif_colorspace_monochrome", heif_colorspace_monochrome)
+    .value("heif_colorspace_nonvisual", heif_colorspace_nonvisual);
     emscripten::enum_<heif_channel>("heif_channel")
     .value("heif_channel_Y", heif_channel_Y)
     .value("heif_channel_Cr", heif_channel_Cr)
@@ -450,12 +452,22 @@ EMSCRIPTEN_BINDINGS(libheif) {
     .value("heif_channel_G", heif_channel_G)
     .value("heif_channel_B", heif_channel_B)
     .value("heif_channel_Alpha", heif_channel_Alpha)
-    .value("heif_channel_interleaved", heif_channel_interleaved);
+    .value("heif_channel_interleaved", heif_channel_interleaved)
+    .value("heif_channel_other_first", heif_channel_other_first)
+    .value("heif_channel_other_last", heif_channel_other_last);
+
     emscripten::enum_<heif_filetype_result>("heif_filetype_result")
     .value("heif_filetype_no", heif_filetype_no)
     .value("heif_filetype_yes_supported", heif_filetype_yes_supported)
     .value("heif_filetype_yes_unsupported", heif_filetype_yes_unsupported)
     .value("heif_filetype_maybe", heif_filetype_maybe);
+
+    emscripten::enum_<heif_channel_datatype>("heif_channel_datatype")
+    .value("heif_channel_datatype_undefined", heif_channel_datatype_undefined)
+    .value("heif_channel_datatype_unsigned_integer", heif_channel_datatype_unsigned_integer)
+    .value("heif_channel_datatype_signed_integer", heif_channel_datatype_signed_integer)
+    .value("heif_channel_datatype_floating_point", heif_channel_datatype_floating_point)
+    .value("heif_channel_datatype_complex_number", heif_channel_datatype_complex_number);
 
     emscripten::class_<heif_context>("heif_context");
     emscripten::class_<heif_image_handle>("heif_image_handle");

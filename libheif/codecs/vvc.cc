@@ -19,11 +19,14 @@
  */
 
 #include "vvc.h"
+#include "file.h"
 #include <cstring>
 #include <string>
 #include <cassert>
 #include <iomanip>
 #include <utility>
+#include <libheif/api_structs.h>
+
 
 Error Box_vvcC::parse(BitstreamRange& range)
 {
@@ -546,4 +549,138 @@ Error parse_sps_for_vvcC_configuration(const uint8_t* sps, size_t size,
   config->constant_frame_rate = 1; // is constant (TODO: where do we get this from)
 
   return Error::Ok;
+}
+
+
+Result<ImageItem::CodedImageData> ImageItem_VVC::encode(const std::shared_ptr<HeifPixelImage>& image,
+                                                        struct heif_encoder* encoder,
+                                                        const struct heif_encoding_options& options,
+                                                        enum heif_image_input_class input_class)
+{
+  CodedImageData codedImage;
+
+  auto vvcC = std::make_shared<Box_vvcC>();
+  codedImage.properties.push_back(vvcC);
+
+
+  heif_image c_api_image;
+  c_api_image.image = image;
+
+  struct heif_error err = encoder->plugin->encode_image(encoder->encoder, &c_api_image, input_class);
+  if (err.code) {
+    return Error(err.code,
+                 err.subcode,
+                 err.message);
+  }
+
+  int encoded_width = 0;
+  int encoded_height = 0;
+
+  for (;;) {
+    uint8_t* data;
+    int size;
+
+    encoder->plugin->get_compressed_data(encoder->encoder, &data, &size, NULL);
+
+    if (data == NULL) {
+      break;
+    }
+
+
+    const uint8_t NAL_SPS = 15;
+
+    uint8_t nal_type = 0;
+    if (size>=2) {
+      nal_type = (data[1] >> 3) & 0x1F;
+    }
+
+    if (nal_type == NAL_SPS) {
+      Box_vvcC::configuration config;
+
+      parse_sps_for_vvcC_configuration(data, size, &config, &encoded_width, &encoded_height);
+
+      vvcC->set_configuration(config);
+    }
+
+    switch (nal_type) {
+      case 14: // VPS
+      case 15: // SPS
+      case 16: // PPS
+        vvcC->append_nal_data(data, size);
+        break;
+
+      default:
+        codedImage.append_with_4bytes_size(data, size);
+    }
+  }
+
+  return codedImage;
+}
+
+
+Result<std::vector<uint8_t>> ImageItem_VVC::read_bitstream_configuration_data(heif_item_id itemId) const
+{
+  std::vector<uint8_t> data;
+
+  // --- get properties for this image
+
+  std::vector<std::shared_ptr<Box>> properties;
+  auto ipma_box = get_file()->get_ipma_box();
+  Error err = get_file()->get_ipco_box()->get_properties_for_item_ID(itemId, ipma_box, properties);
+  if (err)
+  {
+    return err;
+  }
+
+  // --- get codec configuration
+
+  std::shared_ptr<Box_vvcC> vvcC_box;
+  for (auto &prop : properties)
+  {
+    if (prop->get_short_type() == fourcc("vvcC"))
+    {
+      vvcC_box = std::dynamic_pointer_cast<Box_vvcC>(prop);
+      if (vvcC_box)
+      {
+        break;
+      }
+    }
+  }
+
+  if (!vvcC_box)
+  {
+    assert(false);
+    return Error(heif_error_Invalid_input,
+                 heif_suberror_No_vvcC_box);
+  }
+  else if (!vvcC_box->get_headers(&data))
+  {
+    return Error(heif_error_Invalid_input,
+                 heif_suberror_No_item_data);
+  }
+
+  return data;
+}
+
+
+int ImageItem_VVC::get_luma_bits_per_pixel() const
+{
+  auto vvcC_box = get_file()->get_property<Box_vvcC>(get_id());
+  if (vvcC_box) {
+    const Box_vvcC::configuration& config = vvcC_box->get_configuration();
+    if (config.ptl_present_flag) {
+      return config.bit_depth_minus8 + 8;
+    }
+    else {
+      return 8; // TODO: what shall we do if the bit-depth is unknown? Use PIXI?
+    }
+  }
+
+  return -1;
+}
+
+
+int ImageItem_VVC::get_chroma_bits_per_pixel() const
+{
+  return get_luma_bits_per_pixel();
 }

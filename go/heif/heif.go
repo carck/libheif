@@ -99,6 +99,7 @@ const (
 	ColorspaceYCbCr      = C.heif_colorspace_YCbCr
 	ColorspaceRGB        = C.heif_colorspace_RGB
 	ColorspaceMonochrome = C.heif_colorspace_monochrome
+	ColorspaceNonvisual  = C.heif_colorspace_nonvisual
 )
 
 type Channel C.enum_heif_channel
@@ -112,6 +113,18 @@ const (
 	ChannelB           = C.heif_channel_B
 	ChannelAlpha       = C.heif_channel_Alpha
 	ChannelInterleaved = C.heif_channel_interleaved
+	ChannelOtherFirst  = C.heif_channel_other_first
+	ChannelOtherLast   = C.heif_channel_other_last
+)
+
+type ChannelDatatype C.enum_heif_channel_datatype
+
+const (
+	ChannelDatatypeUndefined       = C.heif_channel_datatype_undefined
+	ChannelDatatypeUnsignedInteger = C.heif_channel_datatype_unsigned_integer
+	ChannelDatatypeSignedInteger   = C.heif_channel_datatype_signed_integer
+	ChannelDatatypeFloatingPoint   = C.heif_channel_datatype_floating_point
+	ChannelDatatypeComplexNumber   = C.heif_channel_datatype_complex_number
 )
 
 type ProgressStep C.enum_heif_progress_step
@@ -338,6 +351,8 @@ const (
 	SuberrorUnsupportedDataVersion = C.heif_suberror_Unsupported_data_version
 
 	SuberrorUnsupportedGenericCompressionMethod = C.heif_suberror_Unsupported_generic_compression_method
+
+	SuberrorUnsupportedEssentialProperty = C.heif_suberror_Unsupported_essential_property
 
 	// The conversion of the source image to the requested chroma / colorspace is not supported.
 	SuberrorUnsupportedColorConversion = C.heif_suberror_Unsupported_color_conversion
