@@ -20,18 +20,14 @@
 #ifndef LIBHEIF_SECURITY_LIMITS_H
 #define LIBHEIF_SECURITY_LIMITS_H
 
+#include "libheif/heif.h"
 #include <cinttypes>
 #include <cstddef>
+#include "error.h"
 
-static const size_t MAX_CHILDREN_PER_BOX = 20000;
-static const int MAX_ILOC_ITEMS = 20000;
-static const int MAX_ILOC_EXTENTS_PER_ITEM = 32;
-static const int MAX_MEMORY_BLOCK_SIZE = 512 * 1024 * 1024; // 512 MB
-static const int MAX_COLOR_PROFILE_SIZE = 100 * 1024 * 1024; // 100 MB
 
-// Artificial limit to avoid allocating too much memory.
-// 32768^2 = 1.5 GB as YUV-4:2:0 or 4 GB as RGB32
-static const int64_t MAX_IMAGE_SIZE = 32768 * 32768;
+extern heif_security_limits global_security_limits;
+extern heif_security_limits disabled_security_limits;
 
 // Maximum nesting level of boxes in input files.
 // We put a limit on this to avoid unlimited stack usage by malicious input files.
@@ -42,8 +38,47 @@ static const int64_t MAX_LARGE_BOX_SIZE = 0x0FFFFFFFFFFFFFFF;
 static const int64_t MAX_FILE_POS = 0x007FFFFFFFFFFFFFLL; // maximum file position
 static const int MAX_FRACTION_VALUE = 0x10000;
 
-static const int MAX_IREF_REFERENCES = 10000;
 
-static const int MAX_TILD_TILES = 4100*4100;
+Error check_for_valid_image_size(const heif_security_limits* limits, uint32_t width, uint32_t height);
+
+
+class TotalMemoryTracker
+{
+public:
+  explicit TotalMemoryTracker(const heif_security_limits* limits_context);
+  ~TotalMemoryTracker();
+
+  size_t get_max_total_memory_used() const;
+
+  void operator=(const TotalMemoryTracker&) = delete;
+  TotalMemoryTracker(const TotalMemoryTracker&) = delete;
+
+private:
+  const heif_security_limits* m_limits_context = nullptr;
+};
+
+
+class MemoryHandle
+{
+public:
+  MemoryHandle() = default;
+  ~MemoryHandle() { free(); }
+
+  Error alloc(size_t memory_amount, const heif_security_limits* limits_context, const char* reason_description);
+
+  void free();
+
+  void free(size_t memory_amount);
+
+  const heif_security_limits* get_security_limits() const { return m_limits_context; }
+
+  void operator=(const MemoryHandle&) = delete;
+  MemoryHandle(const MemoryHandle&) = delete;
+
+private:
+  const heif_security_limits* m_limits_context = nullptr;
+  size_t m_memory_amount = 0;
+};
+
 
 #endif  // LIBHEIF_SECURITY_LIMITS_H

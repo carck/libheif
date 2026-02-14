@@ -25,25 +25,26 @@
 */
 
 #include "pixelimage.h"
-#include "catch.hpp"
+#include "catch_amalgamated.hpp"
 
 TEST_CASE( "uint32_t" )
 {
   HeifPixelImage image;
 
+  auto* limits = heif_get_global_security_limits();
   image.create(3,2, heif_colorspace_nonvisual, heif_chroma_undefined);
-  image.add_channel(heif_channel_other_first, 3,2, heif_channel_datatype_unsigned_integer, 32);
+  image.add_channel(heif_channel_Y, 3,2, heif_channel_datatype_unsigned_integer, 32, limits);
 
-  uint32_t stride;
-  uint32_t* data = image.get_channel<uint32_t>(heif_channel_other_first, &stride);
+  size_t stride;
+  uint32_t* data = image.get_channel<uint32_t>(heif_channel_Y, &stride);
 
   REQUIRE(stride >= 3);
-  REQUIRE(image.get_width(heif_channel_other_first) == 3);
-  REQUIRE(image.get_height(heif_channel_other_first) == 2);
-  REQUIRE(image.get_bits_per_pixel(heif_channel_other_first) == 32);
-  REQUIRE(image.get_storage_bits_per_pixel(heif_channel_other_first) == 32);
-  REQUIRE(image.get_datatype(heif_channel_other_first) == heif_channel_datatype_unsigned_integer);
-  REQUIRE(image.get_number_of_interleaved_components(heif_channel_other_first) == 1);
+  REQUIRE(image.get_width(heif_channel_Y) == 3);
+  REQUIRE(image.get_height(heif_channel_Y) == 2);
+  REQUIRE(image.get_bits_per_pixel(heif_channel_Y) == 32);
+  REQUIRE(image.get_storage_bits_per_pixel(heif_channel_Y) == 32);
+  REQUIRE(image.get_datatype(heif_channel_Y) == heif_channel_datatype_unsigned_integer);
+  REQUIRE(image.get_number_of_interleaved_components(heif_channel_Y) == 1);
 
   data[0*stride + 0] = 0;
   data[0*stride + 1] = 0xFFFFFFFFu;
@@ -57,11 +58,11 @@ TEST_CASE( "uint32_t" )
   // --- rotate data
 
   std::shared_ptr<HeifPixelImage> rot;
-  auto rotationResult = image.rotate_ccw(90);
-  REQUIRE(rotationResult.error.error_code == heif_error_Ok);
-  rot = rotationResult.value;
+  auto rotationResult = image.rotate_ccw(90, limits);
+  REQUIRE(rotationResult.error().error_code == heif_error_Ok);
+  rot = *rotationResult;
 
-  data = rot->get_channel<uint32_t>(heif_channel_other_first, &stride);
+  data = rot->get_channel<uint32_t>(heif_channel_Y, &stride);
 
   REQUIRE(data[0*stride + 0] == 1000);
   REQUIRE(data[0*stride + 1] == 2000);
@@ -72,7 +73,7 @@ TEST_CASE( "uint32_t" )
 
   // --- mirror
 
-  rot->mirror_inplace(heif_transform_mirror_direction_horizontal);
+  rot->mirror_inplace(heif_transform_mirror_direction_horizontal, limits);
 
   REQUIRE(data[0*stride + 1] == 1000);
   REQUIRE(data[0*stride + 0] == 2000);
@@ -81,7 +82,7 @@ TEST_CASE( "uint32_t" )
   REQUIRE(data[2*stride + 1] == 0);
   REQUIRE(data[2*stride + 0] == 0xFFFFFFFFu);
 
-  rot->mirror_inplace(heif_transform_mirror_direction_vertical);
+  rot->mirror_inplace(heif_transform_mirror_direction_vertical, limits);
 
   REQUIRE(data[2*stride + 1] == 1000);
   REQUIRE(data[2*stride + 0] == 2000);
@@ -93,26 +94,26 @@ TEST_CASE( "uint32_t" )
   // --- crop
 
   std::shared_ptr<HeifPixelImage> crop;
-  auto cropResult = image.crop(1,2,1,1);
-  REQUIRE(cropResult.error.error_code == heif_error_Ok);
-  crop = cropResult.value;
+  auto cropResult = image.crop(1,2,1,1, limits);
+  REQUIRE(cropResult.error().error_code == heif_error_Ok);
+  crop = *cropResult;
 
-  REQUIRE(crop->get_width(heif_channel_other_first) == 2);
-  REQUIRE(crop->get_height(heif_channel_other_first) == 1);
+  REQUIRE(crop->get_width(heif_channel_Y) == 2);
+  REQUIRE(crop->get_height(heif_channel_Y) == 1);
 
-  data = crop->get_channel<uint32_t>(heif_channel_other_first, &stride);
+  data = crop->get_channel<uint32_t>(heif_channel_Y, &stride);
 
   REQUIRE(data[0*stride + 0] == 0);
   REQUIRE(data[0*stride + 1] == 2000);
 
-  cropResult = image.crop(0,1,0,1);
-  REQUIRE(cropResult.error.error_code == heif_error_Ok);
-  crop = cropResult.value;
+  cropResult = image.crop(0,1,0,1, limits);
+  REQUIRE(cropResult.error().error_code == heif_error_Ok);
+  crop = *cropResult;
 
-  REQUIRE(crop->get_width(heif_channel_other_first) == 2);
-  REQUIRE(crop->get_height(heif_channel_other_first) == 2);
+  REQUIRE(crop->get_width(heif_channel_Y) == 2);
+  REQUIRE(crop->get_height(heif_channel_Y) == 2);
 
-  data = crop->get_channel<uint32_t>(heif_channel_other_first, &stride);
+  data = crop->get_channel<uint32_t>(heif_channel_Y, &stride);
 
   REQUIRE(data[0*stride + 0] == 0);
   REQUIRE(data[0*stride + 1] == 0xFFFFFFFFu);
@@ -125,19 +126,20 @@ TEST_CASE( "complex64_t" )
 {
   HeifPixelImage image;
 
+  auto* limits = heif_get_global_security_limits();
   image.create(3,2, heif_colorspace_nonvisual, heif_chroma_undefined);
-  image.add_channel(heif_channel_other_first, 3,2, heif_channel_datatype_complex_number, 128);
+  image.add_channel(heif_channel_Y, 3,2, heif_channel_datatype_complex_number, 128, limits);
 
-  uint32_t stride;
-  heif_complex64* data = image.get_channel<heif_complex64>(heif_channel_other_first, &stride);
+  size_t stride;
+  heif_complex64* data = image.get_channel<heif_complex64>(heif_channel_Y, &stride);
 
   REQUIRE(stride >= 3);
-  REQUIRE(image.get_width(heif_channel_other_first) == 3);
-  REQUIRE(image.get_height(heif_channel_other_first) == 2);
-  REQUIRE(image.get_bits_per_pixel(heif_channel_other_first) == 128);
-  REQUIRE(image.get_storage_bits_per_pixel(heif_channel_other_first) == 128);
-  REQUIRE(image.get_datatype(heif_channel_other_first) == heif_channel_datatype_complex_number);
-  REQUIRE(image.get_number_of_interleaved_components(heif_channel_other_first) == 1);
+  REQUIRE(image.get_width(heif_channel_Y) == 3);
+  REQUIRE(image.get_height(heif_channel_Y) == 2);
+  REQUIRE(image.get_bits_per_pixel(heif_channel_Y) == 128);
+  REQUIRE(image.get_storage_bits_per_pixel(heif_channel_Y) == 128);
+  REQUIRE(image.get_datatype(heif_channel_Y) == heif_channel_datatype_complex_number);
+  REQUIRE(image.get_number_of_interleaved_components(heif_channel_Y) == 1);
 
   data[0*stride + 0] = {0.0, -1.0};
   data[0*stride + 1] = {1.0, 2.0};
@@ -157,15 +159,15 @@ TEST_CASE( "image datatype through public API" )
   heif_error error = heif_image_create(3,2,heif_colorspace_nonvisual, heif_chroma_undefined, &image);
   REQUIRE(!error.code);
 
-  heif_image_add_channel(image, heif_channel_other_first, 3,2, heif_channel_datatype_unsigned_integer, 32);
+  heif_image_add_channel(image, heif_channel_Y, 3,2, heif_channel_datatype_unsigned_integer, 32);
 
-  uint32_t stride;
-  uint32_t* data = heif_image_get_channel_uint32(image, heif_channel_other_first, &stride);
+  size_t stride;
+  uint32_t* data = heif_image_get_channel_uint32(image, heif_channel_Y, &stride);
   REQUIRE(data != nullptr);
 
   REQUIRE(stride >= 3);
-  REQUIRE(heif_image_get_datatype(image, heif_channel_other_first) == heif_channel_datatype_unsigned_integer);
-  REQUIRE(heif_image_get_bits_per_pixel_range(image, heif_channel_other_first) == 32);
+  REQUIRE(heif_image_get_datatype(image, heif_channel_Y) == heif_channel_datatype_unsigned_integer);
+  REQUIRE(heif_image_get_bits_per_pixel_range(image, heif_channel_Y) == 32);
 
   data[stride*0 + 0] = 0xFFFFFFFFu;
   data[stride*0 + 1] = 0;

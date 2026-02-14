@@ -24,8 +24,10 @@
 #include <memory>
 #include <cstring>
 #include <cassert>
+#include <csetjmp>
 #include <vector>
 #include <cstdio>
+#include <string>
 
 extern "C" {
 #include <jpeglib.h>
@@ -35,6 +37,9 @@ extern "C" {
 struct jpeg_decoder
 {
   std::vector<uint8_t> data;
+  uintptr_t user_data;
+
+  std::string error_message;
 };
 
 static const char kSuccess[] = "Success";
@@ -71,7 +76,7 @@ static void jpeg_deinit_plugin()
 }
 
 
-static int jpeg_does_support_format(enum heif_compression_format format)
+static int jpeg_does_support_format(heif_compression_format format)
 {
   if (format == heif_compression_JPEG) {
     return JPEG_PLUGIN_PRIORITY;
@@ -82,19 +87,34 @@ static int jpeg_does_support_format(enum heif_compression_format format)
 }
 
 
-struct heif_error jpeg_new_decoder(void** dec)
+static int jpeg_does_support_format2(const heif_decoder_plugin_compressed_format_description* format)
+{
+  return jpeg_does_support_format(format->format);
+}
+
+heif_error jpeg_new_decoder2(void** dec, const heif_decoder_plugin_options* options)
 {
   struct jpeg_decoder* decoder = new jpeg_decoder();
   *dec = decoder;
 
-  struct heif_error err = {heif_error_Ok, heif_suberror_Unspecified, kSuccess};
-  return err;
+  return {heif_error_Ok, heif_suberror_Unspecified, kSuccess};
+}
+
+
+heif_error jpeg_new_decoder(void** dec)
+{
+  heif_decoder_plugin_options options;
+  options.format = heif_compression_JPEG;
+  options.num_threads = 0;
+  options.strict_decoding = false;
+
+  return jpeg_new_decoder2(dec, &options);
 }
 
 
 void jpeg_free_decoder(void* decoder_raw)
 {
-  struct jpeg_decoder* decoder = (jpeg_decoder*) decoder_raw;
+  jpeg_decoder* decoder = (jpeg_decoder*) decoder_raw;
 
   if (!decoder) {
     return;
@@ -110,26 +130,59 @@ void jpeg_set_strict_decoding(void* decoder_raw, int flag)
 }
 
 
-struct heif_error jpeg_push_data(void* decoder_raw, const void* frame_data, size_t frame_size)
+heif_error jpeg_push_data2(void* decoder_raw, const void* frame_data, size_t frame_size, uintptr_t user_data)
 {
-  struct jpeg_decoder* decoder = (struct jpeg_decoder*) decoder_raw;
+  jpeg_decoder* decoder = (jpeg_decoder*) decoder_raw;
 
   const uint8_t* input_data = (const uint8_t*)frame_data;
 
   decoder->data.insert(decoder->data.end(), input_data, input_data + frame_size);
+  decoder->user_data = user_data;
 
-  struct heif_error err = {heif_error_Ok, heif_suberror_Unspecified, kSuccess};
-  return err;
+  return {heif_error_Ok, heif_suberror_Unspecified, kSuccess};
+}
+
+heif_error jpeg_push_data(void* decoder_raw, const void* frame_data, size_t frame_size)
+{
+  return jpeg_push_data2(decoder_raw, frame_data, frame_size, 0);
 }
 
 
-struct heif_error jpeg_decode_image(void* decoder_raw, struct heif_image** out_img)
+struct my_error_manager {
+  jpeg_error_mgr mgr;
+  jmp_buf setjmp_buffer;
+};
+
+static char last_libjpeg_error_message[JMSG_LENGTH_MAX];
+
+void on_jpeg_error(j_common_ptr cinfo)
 {
-  struct jpeg_decoder* decoder = (struct jpeg_decoder*) decoder_raw;
+  /* cinfo->err actually points to a jpegErrorManager struct */
+  auto* my_err_mgr = (my_error_manager*) cinfo->err;
+  /* note : *(cinfo->err) is now equivalent to myerr->mgr */
+
+  // Create the message
+  ( *(cinfo->err->format_message) ) (cinfo, last_libjpeg_error_message);
+
+  // Jump to the setjmp point
+  longjmp(my_err_mgr->setjmp_buffer, 1);
+}
 
 
-  struct jpeg_decompress_struct cinfo;
-  struct jpeg_error_mgr jerr;
+heif_error jpeg_decode_next_image2(void* decoder_raw, heif_image** out_img,
+                                   uintptr_t* out_user_data,
+                                   const heif_security_limits* limits)
+{
+  jpeg_decoder* decoder = (jpeg_decoder*) decoder_raw;
+
+  // When there is no input data yet, return NULL image.
+  if (decoder->data.empty()) {
+    *out_img = nullptr;
+    return heif_error_ok;
+  }
+
+  jpeg_decompress_struct cinfo;
+  my_error_manager jerr;
 
   // to store embedded icc profile
 //  uint32_t iccLen;
@@ -142,7 +195,21 @@ struct heif_error jpeg_decode_image(void* decoder_raw, struct heif_image** out_i
 
   jpeg_create_decompress(&cinfo);
 
-  cinfo.err = jpeg_std_error(&jerr);
+  cinfo.err = jpeg_std_error(&jerr.mgr);
+  jerr.mgr.error_exit = on_jpeg_error;
+  if (setjmp(jerr.setjmp_buffer)) {
+    // If we get here, the JPEG code has signaled an error.
+
+    jpeg_destroy_decompress(&cinfo);
+
+    return heif_error{
+      heif_error_Decoder_plugin_error,
+      heif_suberror_Unspecified,
+      last_libjpeg_error_message,
+    };
+  }
+
+
   jpeg_mem_src(&cinfo, decoder->data.data(), static_cast<unsigned long>(decoder->data.size()));
 
   /* Adding this part to prepare for icc profile reading. */
@@ -176,20 +243,28 @@ struct heif_error jpeg_decode_image(void* decoder_raw, struct heif_image** out_i
 
     // create destination image
 
-    struct heif_image* heif_img = nullptr;
-    struct heif_error err = heif_image_create(cinfo.output_width, cinfo.output_height,
-                                              heif_colorspace_monochrome,
-                                              heif_chroma_monochrome,
-                                              &heif_img);
+    heif_image* heif_img = nullptr;
+    heif_error err = heif_image_create(cinfo.output_width, cinfo.output_height,
+                                       heif_colorspace_monochrome,
+                                       heif_chroma_monochrome,
+                                       &heif_img);
     if (err.code != heif_error_Ok) {
       assert(heif_img==nullptr);
       return err;
     }
 
-    heif_image_add_plane(heif_img, heif_channel_Y, cinfo.output_width, cinfo.output_height, 8);
+    err = heif_image_add_plane_safe(heif_img, heif_channel_Y, cinfo.output_width, cinfo.output_height, 8, limits);
+    if (err.code) {
+      // copy error message to decoder object because heif_image will be released
+      decoder->error_message = err.message;
+      err.message = decoder->error_message.c_str();
 
-    int y_stride;
-    uint8_t* py = heif_image_get_plane(heif_img, heif_channel_Y, &y_stride);
+      heif_image_release(heif_img);
+      return err;
+    }
+
+    size_t y_stride;
+    uint8_t* py = heif_image_get_plane2(heif_img, heif_channel_Y, &y_stride);
 
 
     // read the image
@@ -214,26 +289,47 @@ struct heif_error jpeg_decode_image(void* decoder_raw, struct heif_image** out_i
 
     // create destination image
 
-    struct heif_image* heif_img = nullptr;
-    struct heif_error err = heif_image_create(cinfo.output_width, cinfo.output_height,
-                                              heif_colorspace_YCbCr,
-                                              heif_chroma_420,
-                                              &heif_img);
+    heif_image* heif_img = nullptr;
+    heif_error err = heif_image_create(cinfo.output_width, cinfo.output_height,
+                                       heif_colorspace_YCbCr,
+                                       heif_chroma_420,
+                                       &heif_img);
     if (err.code != heif_error_Ok) {
       assert(heif_img==nullptr);
       return err;
     }
 
-    heif_image_add_plane(heif_img, heif_channel_Y, cinfo.output_width, cinfo.output_height, 8);
-    heif_image_add_plane(heif_img, heif_channel_Cb, (cinfo.output_width + 1) / 2, (cinfo.output_height + 1) / 2, 8);
-    heif_image_add_plane(heif_img, heif_channel_Cr, (cinfo.output_width + 1) / 2, (cinfo.output_height + 1) / 2, 8);
+    err = heif_image_add_plane_safe(heif_img, heif_channel_Y, cinfo.output_width, cinfo.output_height, 8, limits);
+    if (err.code) {
+      // copy error message to decoder object because heif_image will be released
+      decoder->error_message = err.message;
+      err.message = decoder->error_message.c_str();
 
-    int y_stride;
-    int cb_stride;
-    int cr_stride;
-    uint8_t* py = heif_image_get_plane(heif_img, heif_channel_Y, &y_stride);
-    uint8_t* pcb = heif_image_get_plane(heif_img, heif_channel_Cb, &cb_stride);
-    uint8_t* pcr = heif_image_get_plane(heif_img, heif_channel_Cr, &cr_stride);
+      return err;
+    }
+    err = heif_image_add_plane_safe(heif_img, heif_channel_Cb, (cinfo.output_width + 1) / 2, (cinfo.output_height + 1) / 2, 8, limits);
+    if (err.code) {
+      // copy error message to decoder object because heif_image will be released
+      decoder->error_message = err.message;
+      err.message = decoder->error_message.c_str();
+
+      return err;
+    }
+    err = heif_image_add_plane_safe(heif_img, heif_channel_Cr, (cinfo.output_width + 1) / 2, (cinfo.output_height + 1) / 2, 8, limits);
+    if (err.code) {
+      // copy error message to decoder object because heif_image will be released
+      decoder->error_message = err.message;
+      err.message = decoder->error_message.c_str();
+
+      return err;
+    }
+
+    size_t y_stride;
+    size_t cb_stride;
+    size_t cr_stride;
+    uint8_t* py = heif_image_get_plane2(heif_img, heif_channel_Y, &y_stride);
+    uint8_t* pcb = heif_image_get_plane2(heif_img, heif_channel_Cb, &cb_stride);
+    uint8_t* pcr = heif_image_get_plane2(heif_img, heif_channel_Cr, &cr_stride);
 
     // read the image
 
@@ -278,6 +374,10 @@ struct heif_error jpeg_decode_image(void* decoder_raw, struct heif_image** out_i
     *out_img = heif_img;
   }
 
+  if (out_user_data) {
+    *out_user_data = decoder->user_data;
+  }
+
 //  if (embeddedIccFlag && iccLen > 0) {
 //    heif_image_set_raw_color_profile(image, "prof", iccBuffer, (size_t) iccLen);
 //  }
@@ -292,10 +392,27 @@ struct heif_error jpeg_decode_image(void* decoder_raw, struct heif_image** out_i
   return heif_error_ok;
 }
 
+heif_error jpeg_decode_next_image(void* decoder_raw, heif_image** out_img,
+                                  const heif_security_limits* limits)
+{
+  return jpeg_decode_next_image2(decoder_raw, out_img, nullptr, limits);
+}
 
-static const struct heif_decoder_plugin decoder_jpeg
+heif_error jpeg_decode_image(void* decoder_raw, heif_image** out_img)
+{
+  auto* limits = heif_get_global_security_limits();
+  return jpeg_decode_next_image(decoder_raw, out_img, limits);
+}
+
+heif_error jpeg_flush_data(void* decoder)
+{
+  return heif_error_ok;
+}
+
+
+static const heif_decoder_plugin decoder_jpeg
     {
-        3,
+        5,
         jpeg_plugin_name,
         jpeg_init_plugin,
         jpeg_deinit_plugin,
@@ -305,11 +422,18 @@ static const struct heif_decoder_plugin decoder_jpeg
         jpeg_push_data,
         jpeg_decode_image,
         jpeg_set_strict_decoding,
-        "jpeg"
+        "jpeg",
+        jpeg_decode_next_image,
+        /* minimum_required_libheif_version */ LIBHEIF_MAKE_VERSION(1,21,0),
+        jpeg_does_support_format2,
+        jpeg_new_decoder2,
+        jpeg_push_data2,
+        jpeg_flush_data,
+        jpeg_decode_next_image2,
     };
 
 
-const struct heif_decoder_plugin* get_decoder_plugin_jpeg()
+const heif_decoder_plugin* get_decoder_plugin_jpeg()
 {
   return &decoder_jpeg;
 }

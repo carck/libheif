@@ -24,11 +24,11 @@
   SOFTWARE.
 */
 
-#include "catch.hpp"
+#include "catch_amalgamated.hpp"
 #include "box.h"
 #include "libheif/heif.h"
-#include "codecs/uncompressed.h"
-#include "codecs/uncompressed_box.h"
+#include "codecs/uncompressed/unc_types.h"
+#include "codecs/uncompressed/unc_boxes.h"
 #include <cstdint>
 #include <iostream>
 
@@ -214,7 +214,7 @@ TEST_CASE( "uncC" )
 
     Indent indent;
     std::string dump_output = uncC->dump(indent);
-    REQUIRE(dump_output == "Box: uncC -----\nsize: 0   (header size: 0)\nprofile: 1919378017 (rgba)\ncomponent_index: 0\ncomponent_bit_depth: 8\ncomponent_format: unsigned\ncomponent_align_size: 0\ncomponent_index: 1\ncomponent_bit_depth: 8\ncomponent_format: unsigned\ncomponent_align_size: 0\ncomponent_index: 2\ncomponent_bit_depth: 8\ncomponent_format: unsigned\ncomponent_align_size: 0\ncomponent_index: 3\ncomponent_bit_depth: 8\ncomponent_format: unsigned\ncomponent_align_size: 0\nsampling_type: no subsampling\ninterleave_type: pixel\nblock_size: 0\ncomponents_little_endian: 0\nblock_pad_lsb: 0\nblock_little_endian: 0\nblock_reversed: 0\npad_unknown: 0\npixel_size: 0\nrow_align_size: 0\ntile_align_size: 0\nnum_tile_cols: 1\nnum_tile_rows: 1\n");
+    REQUIRE(dump_output == "Box: uncC -----\nsize: 0   (header size: 0)\nprofile: 1919378017 (rgba)\ncomponent_index: 0\n| component_bit_depth: 8\n| component_format: unsigned\n| component_align_size: 0\ncomponent_index: 1\n| component_bit_depth: 8\n| component_format: unsigned\n| component_align_size: 0\ncomponent_index: 2\n| component_bit_depth: 8\n| component_format: unsigned\n| component_align_size: 0\ncomponent_index: 3\n| component_bit_depth: 8\n| component_format: unsigned\n| component_align_size: 0\nsampling_type: no subsampling\ninterleave_type: pixel\nblock_size: 0\ncomponents_little_endian: 0\nblock_pad_lsb: 0\nblock_little_endian: 0\nblock_reversed: 0\npad_unknown: 0\npixel_size: 0\nrow_align_size: 0\ntile_align_size: 0\nnum_tile_cols: 1\nnum_tile_rows: 1\n");
 }
 
 TEST_CASE("uncC_parse") {
@@ -234,7 +234,7 @@ TEST_CASE("uncC_parse") {
 
   BitstreamRange range(reader, byteArray.size());
   std::shared_ptr<Box> box;
-  Error error = Box::read(range, &box);
+  Error error = Box::read(range, &box, heif_get_global_security_limits());
   REQUIRE(error == Error::Ok);
   REQUIRE(range.error() == 0);
 
@@ -249,21 +249,21 @@ TEST_CASE("uncC_parse") {
                         "size: 64   (header size: 12)\n"
                         "profile: 1919378017 (rgba)\n"
                         "component_index: 0\n"
-                        "component_bit_depth: 8\n"
-                        "component_format: unsigned\n"
-                        "component_align_size: 0\n"
+                        "| component_bit_depth: 8\n"
+                        "| component_format: unsigned\n"
+                        "| component_align_size: 0\n"
                         "component_index: 1\n"
-                        "component_bit_depth: 8\n"
-                        "component_format: unsigned\n"
-                        "component_align_size: 0\n"
+                        "| component_bit_depth: 8\n"
+                        "| component_format: unsigned\n"
+                        "| component_align_size: 0\n"
                         "component_index: 2\n"
-                        "component_bit_depth: 8\n"
-                        "component_format: unsigned\n"
-                        "component_align_size: 0\n"
+                        "| component_bit_depth: 8\n"
+                        "| component_format: unsigned\n"
+                        "| component_align_size: 0\n"
                         "component_index: 3\n"
-                        "component_bit_depth: 8\n"
-                        "component_format: unsigned\n"
-                        "component_align_size: 0\n"
+                        "| component_bit_depth: 8\n"
+                        "| component_format: unsigned\n"
+                        "| component_align_size: 0\n"
                         "sampling_type: no subsampling\n"
                         "interleave_type: pixel\n"
                         "block_size: 0\n"
@@ -296,7 +296,7 @@ TEST_CASE("uncC_parse_no_overflow") {
 
   BitstreamRange range(reader, byteArray.size());
   std::shared_ptr<Box> box;
-  Error error = Box::read(range, &box);
+  Error error = Box::read(range, &box, heif_get_disabled_security_limits());
   REQUIRE(error == Error::Ok);
   REQUIRE(range.error() == 0);
 
@@ -323,11 +323,10 @@ TEST_CASE("uncC_parse_excess_tile_cols") {
                                                       byteArray.size(), false);
   BitstreamRange range(reader, byteArray.size());
   std::shared_ptr<Box> box;
-  Error error = Box::read(range, &box);
+  Error error = Box::read(range, &box, heif_get_global_security_limits());
   REQUIRE(range.error() == 0);
   REQUIRE(error.error_code == 6);
   REQUIRE(error.sub_error_code == 1000);
-  REQUIRE(error.message == "Tiling size 4294967296 x 32768 exceeds the maximum allowed size 4294967295 x 4294967295");
 }
 
 TEST_CASE("uncC_parse_excess_tile_rows") {
@@ -346,11 +345,10 @@ TEST_CASE("uncC_parse_excess_tile_rows") {
                                                       byteArray.size(), false);
   BitstreamRange range(reader, byteArray.size());
   std::shared_ptr<Box> box;
-  Error error = Box::read(range, &box);
+  Error error = Box::read(range, &box, heif_get_global_security_limits());
   REQUIRE(range.error() == 0);
   REQUIRE(error.error_code == 6);
   REQUIRE(error.sub_error_code == 1000);
-  REQUIRE(error.message == "Tiling size 32768 x 4294967296 exceeds the maximum allowed size 4294967295 x 4294967295");
 }
 
 TEST_CASE("cmpC_defl") {
@@ -365,7 +363,7 @@ TEST_CASE("cmpC_defl") {
 
     BitstreamRange range(reader, byteArray.size());
     std::shared_ptr<Box> box;
-    Error error = Box::read(range, &box);
+    Error error = Box::read(range, &box, heif_get_global_security_limits());
     REQUIRE(error == Error::Ok);
     REQUIRE(range.error() == 0);
 
@@ -401,7 +399,7 @@ TEST_CASE("cmpC_zlib") {
 
     BitstreamRange range(reader, byteArray.size());
     std::shared_ptr<Box> box;
-    Error error = Box::read(range, &box);
+    Error error = Box::read(range, &box, heif_get_global_security_limits());
     REQUIRE(error == Error::Ok);
     REQUIRE(range.error() == 0);
 
@@ -436,7 +434,7 @@ TEST_CASE("cmpC_brot") {
 
     BitstreamRange range(reader, byteArray.size());
     std::shared_ptr<Box> box;
-    Error error = Box::read(range, &box);
+    Error error = Box::read(range, &box, heif_get_global_security_limits());
     REQUIRE(error == Error::Ok);
     REQUIRE(range.error() == 0);
 
@@ -475,7 +473,7 @@ TEST_CASE("icef_24_8_bit") {
 
     BitstreamRange range(reader, byteArray.size());
     std::shared_ptr<Box> box;
-    Error error = Box::read(range, &box);
+    Error error = Box::read(range, &box, heif_get_global_security_limits());
     REQUIRE(error == Error::Ok);
     REQUIRE(range.error() == 0);
 
@@ -513,7 +511,7 @@ TEST_CASE("icef_0_16_bit") {
 
     BitstreamRange range(reader, byteArray.size());
     std::shared_ptr<Box> box;
-    Error error = Box::read(range, &box);
+    Error error = Box::read(range, &box, heif_get_global_security_limits());
     REQUIRE(error == Error::Ok);
     REQUIRE(range.error() == 0);
 
@@ -555,7 +553,7 @@ TEST_CASE("icef_32bit") {
 
     BitstreamRange range(reader, byteArray.size());
     std::shared_ptr<Box> box;
-    Error error = Box::read(range, &box);
+    Error error = Box::read(range, &box, heif_get_global_security_limits());
     REQUIRE(error == Error::Ok);
     REQUIRE(range.error() == 0);
 
@@ -599,7 +597,7 @@ TEST_CASE("icef_uint64") {
 
     BitstreamRange range(reader, byteArray.size());
     std::shared_ptr<Box> box;
-    Error error = Box::read(range, &box);
+    Error error = Box::read(range, &box, heif_get_global_security_limits());
     REQUIRE(error == Error::Ok);
     REQUIRE(range.error() == 0);
 
@@ -641,7 +639,7 @@ TEST_CASE("icef_bad_version") {
 
     BitstreamRange range(reader, byteArray.size());
     std::shared_ptr<Box> box;
-    Error error = Box::read(range, &box);
+    Error error = Box::read(range, &box, heif_get_global_security_limits());
     REQUIRE(error.error_code == heif_error_Unsupported_feature);
     REQUIRE(error.sub_error_code == heif_suberror_Unsupported_data_version);
     REQUIRE(error.message == std::string("icef box data version 1 is not implemented yet"));

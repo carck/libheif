@@ -24,6 +24,7 @@
 #include "pixelimage.h"
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 
@@ -36,7 +37,7 @@ struct ColorState
 
   // ColorConversionOperations can assume that the input and target nclx has no 'unspecified' values
   // if the colorspace is heif_colorspace_YCbCr. Otherwise, the values should preferably be 'unspecified'.
-  color_profile_nclx nclx_profile;
+  nclx_profile nclx;
 
   ColorState() = default;
 
@@ -62,6 +63,8 @@ enum SpeedCosts
 
 struct ColorStateWithCost
 {
+  ColorStateWithCost(ColorState c, int s) : color_state(std::move(c)), speed_costs(s) {}
+
   ColorState color_state;
 
   int speed_costs;
@@ -80,13 +83,16 @@ public:
   virtual std::vector<ColorStateWithCost>
   state_after_conversion(const ColorState& input_state,
                          const ColorState& target_state,
-                         const heif_color_conversion_options& options) const = 0;
+                         const heif_color_conversion_options& options,
+                         const heif_color_conversion_options_ext& options_ext) const = 0;
 
-  virtual std::shared_ptr<HeifPixelImage>
+  virtual Result<std::shared_ptr<HeifPixelImage>>
   convert_colorspace(const std::shared_ptr<const HeifPixelImage>& input,
                      const ColorState& input_state,
                      const ColorState& target_state,
-                     const heif_color_conversion_options& options) const = 0;
+                     const heif_color_conversion_options& options,
+                     const heif_color_conversion_options_ext& options_ext,
+                     const heif_security_limits* limits) const = 0;
 };
 
 
@@ -100,9 +106,11 @@ public:
 
   bool construct_pipeline(const ColorState& input_state,
                           const ColorState& target_state,
-                          const heif_color_conversion_options& options);
+                          const heif_color_conversion_options& options,
+                          const heif_color_conversion_options_ext& options_ext);
 
-  std::shared_ptr<HeifPixelImage> convert_image(const std::shared_ptr<HeifPixelImage>& input);
+  Result<std::shared_ptr<HeifPixelImage>> convert_image(const std::shared_ptr<HeifPixelImage>& input,
+                                                        const heif_security_limits* limits);
 
   std::string debug_dump_pipeline() const;
 
@@ -118,23 +126,28 @@ private:
   std::vector<ConversionStep> m_conversion_steps;
 
   heif_color_conversion_options m_options;
+  heif_color_conversion_options_ext m_options_ext;
 };
 
 
 // If no conversion is required, the input is simply passed through without copy.
 // The input image is never modified by this function, but the input is still non-const because we may pass it through.
-std::shared_ptr<HeifPixelImage> convert_colorspace(const std::shared_ptr<HeifPixelImage>& input,
-                                                   heif_colorspace colorspace,
-                                                   heif_chroma chroma,
-                                                   const std::shared_ptr<const color_profile_nclx>& target_profile,
-                                                   int output_bpp,
-                                                   const heif_color_conversion_options& options);
+Result<std::shared_ptr<HeifPixelImage>> convert_colorspace(const std::shared_ptr<HeifPixelImage>& input,
+                                                           heif_colorspace colorspace,
+                                                           heif_chroma chroma,
+                                                           const nclx_profile& target_profile,
+                                                           int output_bpp,
+                                                           const heif_color_conversion_options& options,
+                                                           const heif_color_conversion_options_ext* options_ext,
+                                                           const heif_security_limits* limits);
 
-std::shared_ptr<const HeifPixelImage> convert_colorspace(const std::shared_ptr<const HeifPixelImage>& input,
-                                                         heif_colorspace colorspace,
-                                                         heif_chroma chroma,
-                                                         const std::shared_ptr<const color_profile_nclx>& target_profile,
-                                                         int output_bpp,
-                                                         const heif_color_conversion_options& options);
+Result<std::shared_ptr<const HeifPixelImage>> convert_colorspace(const std::shared_ptr<const HeifPixelImage>& input,
+                                                                 heif_colorspace colorspace,
+                                                                 heif_chroma chroma,
+                                                                 const nclx_profile& target_profile,
+                                                                 int output_bpp,
+                                                                 const heif_color_conversion_options& options,
+                                                                 const heif_color_conversion_options_ext* options_ext,
+                                                                 const heif_security_limits* limits);
 
 #endif

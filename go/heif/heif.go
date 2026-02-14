@@ -1,21 +1,28 @@
 /*
  * GO interface to libheif
+ *
+ * MIT License
+ *
  * Copyright (c) 2018 Dirk Farin <dirk.farin@gmail.com>
+ * Copyright (c) 2018 Joachim Bauch <bauch@struktur.de>
  *
- * This file is part of heif, an example application using libheif.
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
  *
- * libheif is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Lesser General Public License as
- * published by the Free Software Foundation, either version 3 of
- * the License, or (at your option) any later version.
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
  *
- * libheif is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public License
- * along with libheif.  If not, see <http://www.gnu.org/licenses/>.
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 package heif
@@ -113,18 +120,10 @@ const (
 	ChannelB           = C.heif_channel_B
 	ChannelAlpha       = C.heif_channel_Alpha
 	ChannelInterleaved = C.heif_channel_interleaved
-	ChannelOtherFirst  = C.heif_channel_other_first
-	ChannelOtherLast   = C.heif_channel_other_last
-)
-
-type ChannelDatatype C.enum_heif_channel_datatype
-
-const (
-	ChannelDatatypeUndefined       = C.heif_channel_datatype_undefined
-	ChannelDatatypeUnsignedInteger = C.heif_channel_datatype_unsigned_integer
-	ChannelDatatypeSignedInteger   = C.heif_channel_datatype_signed_integer
-	ChannelDatatypeFloatingPoint   = C.heif_channel_datatype_floating_point
-	ChannelDatatypeComplexNumber   = C.heif_channel_datatype_complex_number
+	ChannelFilterArray = C.heif_channel_filter_array
+	ChannelDepth       = C.heif_channel_depth
+	ChannelDisparity   = C.heif_channel_disparity
+	ChannelUnknown     = C.heif_channel_unknown
 )
 
 type ProgressStep C.enum_heif_progress_step
@@ -184,10 +183,14 @@ const (
 	// Error during encoding or when writing to the output
 	ErrorEncoding = C.heif_error_Encoding_error
 
+	ErrorEndOfSequence = C.heif_error_End_of_sequence
+
 	// Application has asked for a color profile type that does not exist
 	ErrorColorProfileDoesNotExist = C.heif_error_Color_profile_does_not_exist
 
 	ErrorPluginLoadingError = C.heif_error_Plugin_loading_error
+
+	ErrorCanceled = C.heif_error_Canceled
 )
 
 type ErrorSubcode C.enum_heif_suberror_code
@@ -210,6 +213,8 @@ const (
 	SuberrorNoIdatBox = C.heif_suberror_No_idat_box
 
 	SuberrorNoMetaBox = C.heif_suberror_No_meta_box
+
+	SuberrorNoMoovBox = C.heif_suberror_No_moov_box
 
 	SuberrorNoHdlrBox = C.heif_suberror_No_hdlr_box
 
@@ -247,6 +252,8 @@ const (
 	SuberrorMissingGridImages = C.heif_suberror_Missing_grid_images
 
 	SuberrorNoAV1CBox = C.heif_suberror_No_av1C_box
+
+	SuberrorNoAVCCBox = C.heif_suberror_No_avcC_box
 
 	SuberrorInvalidCleanAperture = C.heif_suberror_Invalid_clean_aperture
 
@@ -340,6 +347,8 @@ const (
 
 	SuberrorNoIcbrBox = C.heif_suberror_No_icbr_box
 
+	SuberrorInvalidMiniBox = C.heif_suberror_Invalid_mini_box
+
 	// --- Unsupported_feature ---
 
 	// Image was coded with an unsupported compression method.
@@ -360,6 +369,8 @@ const (
 	SuberrorUnsupportedItemConstructionMethod = C.heif_suberror_Unsupported_item_construction_method
 
 	SuberrorUnsupportedHeaderCompressionMethod = C.heif_suberror_Unsupported_header_compression_method
+
+	SubErrorUnsupportedTrackType = C.heif_suberror_Unsupported_track_type
 
 	// --- Encoder_plugin_error ---
 
@@ -1346,6 +1357,10 @@ func imageFromYCbCr(i *image.YCbCr) (*Image, error) {
 	switch sr := i.SubsampleRatio; sr {
 	case image.YCbCrSubsampleRatio420:
 		cm = Chroma420
+	case image.YCbCrSubsampleRatio422:
+		cm = Chroma422
+	case image.YCbCrSubsampleRatio444:
+		cm = Chroma444
 	default:
 		return nil, fmt.Errorf("unsupported subsample ratio: %s", sr.String())
 	}
@@ -1363,13 +1378,23 @@ func imageFromYCbCr(i *image.YCbCr) (*Image, error) {
 	pY.setData([]byte(i.Y), i.YStride)
 
 	// TODO: Might need to be updated for other SubsampleRatio values.
-	halfW, halfH := (w+1)/2, (h+1)/2
-	pCb, err := out.NewPlane(ChannelCb, halfW, halfH, depth)
+	var cw, ch int
+	switch cm {
+	case Chroma420:
+		cw, ch = (w+1)/2, (h+1)/2
+	case Chroma444:
+		cw, ch = w, h
+	case Chroma422:
+		cw, ch = (w+1)/2, h
+	default:
+		return nil, fmt.Errorf("cm not support: %v", cm)
+	}
+	pCb, err := out.NewPlane(ChannelCb, cw, ch, depth)
 	if err != nil {
 		return nil, fmt.Errorf("failed to add Cb plane: %v", err)
 	}
 	pCb.setData([]byte(i.Cb), i.CStride)
-	pCr, err := out.NewPlane(ChannelCr, halfW, halfH, depth)
+	pCr, err := out.NewPlane(ChannelCr, cw, ch, depth)
 	if err != nil {
 		return nil, fmt.Errorf("failed to add Cr plane: %v", err)
 	}

@@ -41,9 +41,9 @@ class StreamReader
 public:
   virtual ~StreamReader() = default;
 
-  virtual int64_t get_position() const = 0;
+  virtual uint64_t get_position() const = 0;
 
-  enum grow_status
+  enum class grow_status : uint8_t
   {
     size_reached,   // requested size has been reached
     timeout,        // size has not been reached yet, but it may still grow further
@@ -51,40 +51,72 @@ public:
   };
 
   // a StreamReader can maintain a timeout for waiting for new data
-  virtual grow_status wait_for_file_size(int64_t target_size) = 0;
+  virtual grow_status wait_for_file_size(uint64_t target_size) = 0;
 
   // returns 'false' when we read out of the available file size
   virtual bool read(void* data, size_t size) = 0;
 
-  virtual bool seek(int64_t position) = 0;
+  virtual bool seek(uint64_t position) = 0;
 
-  bool seek_cur(int64_t position_offset)
+  bool seek_cur(uint64_t position_offset)
   {
     return seek(get_position() + position_offset);
   }
 
-  virtual uint64_t request_range(uint64_t start, uint64_t size) {
-    return std::numeric_limits<uint64_t>::max()-1; // -1 because we use the maximum as an indication for 'invalid'
+  // Informs the reader implementation that we will process data in the given range.
+  // The reader can use this information to retrieve a larger chunk of data instead of individual read() calls.
+  // Returns the file size that was made available, but you still have to check each read() call.
+  // Returning a value shorter than the requested range end indicates to libheif that the data is not available.
+  // Returns 0 on error.
+  virtual uint64_t request_range(uint64_t start, uint64_t end_pos) {
+    return std::numeric_limits<uint64_t>::max();
   }
+
+  virtual void release_range(uint64_t start, uint64_t end_pos) { }
+
+  virtual void preload_range_hint(uint64_t start, uint64_t end_pos) { }
+
+  Error get_error() const {
+    return m_last_error;
+  }
+
+  void clear_last_error() { m_last_error = {}; }
+
+protected:
+  Error m_last_error;
 };
 
+#include <iostream>
 
 class StreamReader_istream : public StreamReader
 {
 public:
   StreamReader_istream(std::unique_ptr<std::istream>&& istr);
 
-  int64_t get_position() const override;
+  uint64_t get_position() const override;
 
-  grow_status wait_for_file_size(int64_t target_size) override;
+  grow_status wait_for_file_size(uint64_t target_size) override;
 
   bool read(void* data, size_t size) override;
 
-  bool seek(int64_t position) override;
+  bool seek(uint64_t position) override;
+
+  uint64_t request_range(uint64_t start, uint64_t end_pos) override {
+    // std::cout << "[istream] request_range " << start << " - " << end_pos << "\n";
+    return std::min(end_pos, m_length);
+  }
+
+  void release_range(uint64_t start, uint64_t end_pos) override {
+    // std::cout << "[istream] release_range " << start << " - " << end_pos << "\n";
+  }
+
+  void preload_range_hint(uint64_t start, uint64_t end_pos) override {
+    // std::cout << "[istream] preload_range_hint " << start << " - " << end_pos << "\n";
+  }
 
 private:
   std::unique_ptr<std::istream> m_istr;
-  int64_t m_length;
+  uint64_t m_length;
 };
 
 
@@ -95,22 +127,23 @@ public:
 
   ~StreamReader_memory() override;
 
-  int64_t get_position() const override;
+  uint64_t get_position() const override;
 
-  grow_status wait_for_file_size(int64_t target_size) override;
+  grow_status wait_for_file_size(uint64_t target_size) override;
 
   bool read(void* data, size_t size) override;
 
-  bool seek(int64_t position) override;
+  bool seek(uint64_t position) override;
 
-  uint64_t request_range(uint64_t start, uint64_t size) override {
+  // end_pos is last byte to read + 1. I.e. like a file size.
+  uint64_t request_range(uint64_t start, uint64_t end_pos) override {
     return m_length;
   }
 
 private:
   const uint8_t* m_data;
-  int64_t m_length;
-  int64_t m_position;
+  uint64_t m_length;
+  uint64_t m_position;
 
   // if we made a copy of the data, we store a pointer to the owned memory area here
   uint8_t* m_owned_data = nullptr;
@@ -122,13 +155,97 @@ class StreamReader_CApi : public StreamReader
 public:
   StreamReader_CApi(const heif_reader* func_table, void* userdata);
 
-  int64_t get_position() const override { return m_func_table->get_position(m_userdata); }
+  uint64_t get_position() const override { return m_func_table->get_position(m_userdata); }
 
-  StreamReader::grow_status wait_for_file_size(int64_t target_size) override;
+  StreamReader::grow_status wait_for_file_size(uint64_t target_size) override;
 
   bool read(void* data, size_t size) override { return !m_func_table->read(data, size, m_userdata); }
 
-  bool seek(int64_t position) override { return !m_func_table->seek(position, m_userdata); }
+  bool seek(uint64_t position) override { return !m_func_table->seek(position, m_userdata); }
+
+  uint64_t request_range(uint64_t start, uint64_t end_pos) override {
+    if (m_func_table->reader_api_version >= 2) {
+      heif_reader_range_request_result result = m_func_table->request_range(start, end_pos, m_userdata);
+
+      // convert error message string and release input string memory
+
+      std::string error_msg;
+      if (result.reader_error_msg) {
+        error_msg = std::string{result.reader_error_msg};
+
+        if (m_func_table->release_error_msg) {
+          m_func_table->release_error_msg(result.reader_error_msg);
+        }
+      }
+
+      switch (result.status) {
+        case heif_reader_grow_status_size_reached:
+          return end_pos;
+        case heif_reader_grow_status_timeout:
+          return 0; // invalid return value from callback
+        case heif_reader_grow_status_size_beyond_eof:
+          m_last_error = {heif_error_Invalid_input, heif_suberror_End_of_data, "Read beyond file size"};
+          return result.range_end;
+        case heif_reader_grow_status_error: {
+          if (result.reader_error_msg) {
+            std::stringstream sstr;
+            sstr << "Input error (" << result.reader_error_code << ") : " << error_msg;
+            m_last_error = {heif_error_Invalid_input, heif_suberror_Unspecified, sstr.str()};
+          }
+          else {
+            std::stringstream sstr;
+            sstr << "Input error (" << result.reader_error_code << ")";
+            m_last_error = {heif_error_Invalid_input, heif_suberror_Unspecified, sstr.str()};
+          }
+
+          return 0; // error occurred
+        }
+        default:
+          m_last_error = {heif_error_Invalid_input, heif_suberror_Unspecified, "Invalid input reader return value"};
+          return 0;
+      }
+    }
+    else {
+      auto result = m_func_table->wait_for_file_size(end_pos, m_userdata);
+      if (result == heif_reader_grow_status_size_reached) {
+        return end_pos;
+      }
+      else {
+        uint64_t pos = m_func_table->get_position(m_userdata);
+        return bisect_filesize(pos,end_pos);
+      }
+    }
+  }
+
+  uint64_t bisect_filesize(uint64_t mini, uint64_t maxi) {
+    // mini - <= filesize
+    // maxi - >  filesize
+
+    if (maxi == mini + 1) {
+      return mini;
+    }
+
+    uint64_t pos = (mini + maxi) / 2;
+    auto result = m_func_table->wait_for_file_size(pos, m_userdata);
+    if (result == heif_reader_grow_status_size_reached) {
+      return bisect_filesize(pos, maxi);
+    }
+    else {
+      return bisect_filesize(mini, pos);
+    }
+  }
+
+  void release_range(uint64_t start, uint64_t end_pos) override {
+    if (m_func_table->reader_api_version >= 2) {
+      m_func_table->release_file_range(start, end_pos, m_userdata);
+    }
+  }
+
+  void preload_range_hint(uint64_t start, uint64_t end_pos) override {
+    if (m_func_table->reader_api_version >= 2) {
+      m_func_table->preload_range_hint(start, end_pos, m_userdata);
+    }
+  }
 
 private:
   const heif_reader* m_func_table;
@@ -173,7 +290,24 @@ public:
 
   uint64_t read64();
 
+  uint64_t read_uint(int len);
+
+  /**
+   * Read 32 bit floating point value from the bitstream.
+   *
+   * The file data is assumed to be in big endian format.
+   */
+  float read_float32();
+
+  int64_t read64s();
+
   std::string read_string();
+
+  // A string stored with a fixed number of bytes. The first byte contains the string length and the extra bytes
+  // are filled with a padding 0.
+  std::string read_fixed_string(int len);
+
+  std::string read_string_until_eof();
 
   bool read(uint8_t* data, size_t n);
 
@@ -276,11 +410,26 @@ class BitReader
 public:
   BitReader(const uint8_t* buffer, int len);
 
+  void reset();
+
   uint32_t get_bits(int n);
 
   uint8_t get_bits8(int n);
 
+  uint16_t get_bits16(int n);
+
   uint32_t get_bits32(int n);
+
+  int32_t get_bits32s();
+
+  /**
+   * Get a one-bit flag value.
+   *
+   * @returns true if the next bit value is 1, otherwise false
+   */
+  bool get_flag();
+
+  std::vector<uint8_t> read_bytes(uint32_t n);
 
   int get_bits_fast(int n);
 
@@ -309,8 +458,9 @@ public:
   }
 
 private:
+  const uint8_t* const data_start;
   const uint8_t* data;
-  int data_length;
+  const int data_length;
   int bytes_remaining;
 
   uint64_t nextbits; // left-aligned bits
@@ -337,9 +487,15 @@ public:
 
   void write64(uint64_t);
 
+  void write_float32(float);
+
+  void write64s(int64_t);
+
   void write(int size, uint64_t value);
 
-  void write(const std::string&);
+  void write(const std::string&, bool end_with_null = true);
+
+  void write_fixed_string(std::string s, size_t len);
 
   void write(const std::vector<uint8_t>&);
 

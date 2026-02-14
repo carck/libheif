@@ -24,8 +24,14 @@
 #include "error.h"
 #include "bitstream.h"
 #include "box.h"
+#if ENABLE_EXPERIMENTAL_MINI_FORMAT
+#include "mini.h"
+#endif
+
 #include <memory>
 #include <vector>
+
+class Box_moov;
 
 
 class FileLayout
@@ -40,7 +46,7 @@ public:
   // Generate a file in WriteMode::Floating
   FileLayout();
 
-  Error read(const std::shared_ptr<StreamReader>& stream);
+  Error read(const std::shared_ptr<StreamReader>& stream, const heif_security_limits* limits);
 
   // For WriteMode::Streaming, writer cannot be null.
   void set_write_mode(WriteMode writeMode, const std::shared_ptr<StreamWriter>& writer = nullptr);
@@ -55,6 +61,12 @@ public:
 
   std::shared_ptr<Box_meta> get_meta_box() { return m_meta_box; }
 
+#if ENABLE_EXPERIMENTAL_MINI_FORMAT
+  std::shared_ptr<Box_mini> get_mini_box() { return m_mini_box; }
+#endif
+
+  std::shared_ptr<Box_moov> get_moov_box() { return m_moov_box; }
+
 private:
   WriteMode m_writeMode = WriteMode::Floating;
 
@@ -67,6 +79,10 @@ private:
 
   std::shared_ptr<Box_ftyp> m_ftyp_box;
   std::shared_ptr<Box_meta> m_meta_box;
+#if ENABLE_EXPERIMENTAL_MINI_FORMAT
+  std::shared_ptr<Box_mini> m_mini_box;
+#endif
+  std::shared_ptr<Box_moov> m_moov_box;
 
 
   uint64_t m_max_length = 0; // Length seen so far. It can grow over time.

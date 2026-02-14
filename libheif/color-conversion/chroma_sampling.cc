@@ -26,7 +26,8 @@ template<class Pixel>
 std::vector<ColorStateWithCost>
 Op_YCbCr444_to_YCbCr420_average<Pixel>::state_after_conversion(const ColorState& input_state,
                                                                const ColorState& target_state,
-                                                               const heif_color_conversion_options& options) const
+                                                               const heif_color_conversion_options& options,
+                                                               const heif_color_conversion_options_ext& options_ext) const
 {
   if (input_state.colorspace != heif_colorspace_YCbCr) {
     return {};
@@ -48,7 +49,7 @@ Op_YCbCr444_to_YCbCr420_average<Pixel>::state_after_conversion(const ColorState&
     return {};
   }
 
-  if (input_state.nclx_profile.get_matrix_coefficients() == 0) {
+  if (input_state.nclx.get_matrix_coefficients() == 0) {
     return {};
   }
 
@@ -66,20 +67,22 @@ Op_YCbCr444_to_YCbCr420_average<Pixel>::state_after_conversion(const ColorState&
   output_state.chroma = heif_chroma_420;
   output_state.has_alpha = input_state.has_alpha;  // we simply keep the old alpha plane
   output_state.bits_per_pixel = input_state.bits_per_pixel;
-  output_state.nclx_profile = input_state.nclx_profile;
+  output_state.nclx = input_state.nclx;
 
-  states.push_back({output_state, SpeedCosts_Unoptimized});
+  states.emplace_back(output_state, SpeedCosts_Unoptimized);
 
   return states;
 }
 
 
 template<class Pixel>
-std::shared_ptr<HeifPixelImage>
+Result<std::shared_ptr<HeifPixelImage>>
 Op_YCbCr444_to_YCbCr420_average<Pixel>::convert_colorspace(const std::shared_ptr<const HeifPixelImage>& input,
                                                            const ColorState& input_state,
                                                            const ColorState& target_state,
-                                                           const heif_color_conversion_options& options) const
+                                                           const heif_color_conversion_options& options,
+                                                           const heif_color_conversion_options_ext& options_ext,
+                                                           const heif_security_limits* limits) const
 {
   bool hdr = !std::is_same<Pixel, uint8_t>::value;
 
@@ -98,14 +101,14 @@ Op_YCbCr444_to_YCbCr420_average<Pixel>::convert_colorspace(const std::shared_ptr
     if (bpp_y > 8 ||
         bpp_cb > 8 ||
         bpp_cr > 8) {
-      return nullptr;
+      return Error::InternalError;
     }
   }
   else {
     if (bpp_y <= 8 ||
         bpp_cb <= 8 ||
         bpp_cr <= 8) {
-      return nullptr;
+      return Error::InternalError;
     }
   }
 
@@ -113,11 +116,9 @@ Op_YCbCr444_to_YCbCr420_average<Pixel>::convert_colorspace(const std::shared_ptr
   if (bpp_y != bpp_cb ||
       bpp_y != bpp_cr) {
     // TODO: test with varying bit depths when we have a test image
-    return nullptr;
+    return Error::InternalError;
   }
 
-
-  auto colorProfile = input->get_color_profile_nclx();
 
   uint32_t width = input->get_width();
   uint32_t height = input->get_height();
@@ -129,23 +130,23 @@ Op_YCbCr444_to_YCbCr420_average<Pixel>::convert_colorspace(const std::shared_ptr
   uint32_t cwidth = (width + 1) / 2;
   uint32_t cheight = (height + 1) / 2;
 
-  if (!outimg->add_plane(heif_channel_Y, width, height, bpp_y) ||
-      !outimg->add_plane(heif_channel_Cb, cwidth, cheight, bpp_cb) ||
-      !outimg->add_plane(heif_channel_Cr, cwidth, cheight, bpp_cr)) {
-    return nullptr;
+  if (auto err = outimg->add_plane(heif_channel_Y, width, height, bpp_y, limits) ||
+                 outimg->add_plane(heif_channel_Cb, cwidth, cheight, bpp_cb, limits) ||
+                 outimg->add_plane(heif_channel_Cr, cwidth, cheight, bpp_cr, limits)) {
+    return err;
   }
 
   if (has_alpha) {
-    if (!outimg->add_plane(heif_channel_Alpha, width, height, bpp_a)) {
-      return nullptr;
+    if (auto err = outimg->add_plane(heif_channel_Alpha, width, height, bpp_a, limits)) {
+      return err;
     }
   }
 
-  const Pixel* in_y, * in_cb, * in_cr, * in_a;
-  uint32_t in_y_stride = 0, in_cb_stride = 0, in_cr_stride = 0, in_a_stride = 0;
+  const Pixel* in_y, * in_cb, * in_cr;
+  size_t in_y_stride = 0, in_cb_stride = 0, in_cr_stride = 0, in_a_stride = 0;
 
-  Pixel* out_y, * out_cb, * out_cr, * out_a;
-  uint32_t out_y_stride = 0, out_cb_stride = 0, out_cr_stride = 0, out_a_stride = 0;
+  Pixel* out_y, * out_cb, * out_cr;
+  size_t out_y_stride = 0, out_cb_stride = 0, out_cr_stride = 0, out_a_stride = 0;
 
   in_y = (const Pixel*) input->get_plane(heif_channel_Y, &in_y_stride);
   in_cb = (const Pixel*) input->get_plane(heif_channel_Cb, &in_cb_stride);
@@ -154,26 +155,29 @@ Op_YCbCr444_to_YCbCr420_average<Pixel>::convert_colorspace(const std::shared_ptr
   out_cb = (Pixel*) outimg->get_plane(heif_channel_Cb, &out_cb_stride);
   out_cr = (Pixel*) outimg->get_plane(heif_channel_Cr, &out_cr_stride);
 
+  if (hdr) {
+    in_y_stride /= 2;
+    in_cb_stride /= 2;
+    in_cr_stride /= 2;
+    out_y_stride /= 2;
+    out_cb_stride /= 2;
+    out_cr_stride /= 2;
+  }
+
+
+  // We only copy the alpha, do not access it as 16 bit
+  const uint8_t* in_a;
+  uint8_t* out_a;
+
   if (has_alpha) {
-    in_a = (const Pixel*) input->get_plane(heif_channel_Alpha, &in_a_stride);
-    out_a = (Pixel*) outimg->get_plane(heif_channel_Alpha, &out_a_stride);
+    in_a = input->get_plane(heif_channel_Alpha, &in_a_stride);
+    out_a = outimg->get_plane(heif_channel_Alpha, &out_a_stride);
   }
   else {
     in_a = nullptr;
     out_a = nullptr;
   }
 
-
-  if (hdr) {
-    in_y_stride /= 2;
-    in_cb_stride /= 2;
-    in_cr_stride /= 2;
-    in_a_stride /= 2;
-    out_y_stride /= 2;
-    out_cb_stride /= 2;
-    out_cr_stride /= 2;
-    out_a_stride /= 2;
-  }
 
   // --- fill right and bottom borders if the image size is odd
 
@@ -228,7 +232,8 @@ Op_YCbCr444_to_YCbCr420_average<Pixel>::convert_colorspace(const std::shared_ptr
     memcpy(&out_y[y * out_y_stride], &in_y[y * in_y_stride], copyWidth);
 
     if (has_alpha) {
-      memcpy(&out_a[y * out_a_stride], &in_a[y * in_a_stride], copyWidth);
+      uint32_t alphaCopyWidth = (bpp_a > 8 ? width * 2 : width);
+      memcpy(&out_a[y * out_a_stride], &in_a[y * in_a_stride], alphaCopyWidth);
     }
   }
 
@@ -244,7 +249,8 @@ template<class Pixel>
 std::vector<ColorStateWithCost>
 Op_YCbCr444_to_YCbCr422_average<Pixel>::state_after_conversion(const ColorState& input_state,
                                                                const ColorState& target_state,
-                                                               const heif_color_conversion_options& options) const
+                                                               const heif_color_conversion_options& options,
+                                                               const heif_color_conversion_options_ext& options_ext) const
 {
   if (input_state.colorspace != heif_colorspace_YCbCr) {
     return {};
@@ -266,7 +272,7 @@ Op_YCbCr444_to_YCbCr422_average<Pixel>::state_after_conversion(const ColorState&
     return {};
   }
 
-  if (input_state.nclx_profile.get_matrix_coefficients() == 0) {
+  if (input_state.nclx.get_matrix_coefficients() == 0) {
     return {};
   }
 
@@ -284,20 +290,22 @@ Op_YCbCr444_to_YCbCr422_average<Pixel>::state_after_conversion(const ColorState&
   output_state.chroma = heif_chroma_422;
   output_state.has_alpha = input_state.has_alpha;  // we simply keep the old alpha plane
   output_state.bits_per_pixel = input_state.bits_per_pixel;
-  output_state.nclx_profile = input_state.nclx_profile;
+  output_state.nclx = input_state.nclx;
 
-  states.push_back({output_state, SpeedCosts_Unoptimized});
+  states.emplace_back(output_state, SpeedCosts_Unoptimized);
 
   return states;
 }
 
 
 template<class Pixel>
-std::shared_ptr<HeifPixelImage>
+Result<std::shared_ptr<HeifPixelImage>>
 Op_YCbCr444_to_YCbCr422_average<Pixel>::convert_colorspace(const std::shared_ptr<const HeifPixelImage>& input,
                                                            const ColorState& input_state,
                                                            const ColorState& target_state,
-                                                           const heif_color_conversion_options& options) const
+                                                           const heif_color_conversion_options& options,
+                                                           const heif_color_conversion_options_ext& options_ext,
+                                                           const heif_security_limits* limits) const
 {
   bool hdr = !std::is_same<Pixel, uint8_t>::value;
 
@@ -316,14 +324,14 @@ Op_YCbCr444_to_YCbCr422_average<Pixel>::convert_colorspace(const std::shared_ptr
     if (bpp_y > 8 ||
         bpp_cb > 8 ||
         bpp_cr > 8) {
-      return nullptr;
+      return Error::InternalError;
     }
   }
   else {
     if (bpp_y <= 8 ||
         bpp_cb <= 8 ||
         bpp_cr <= 8) {
-      return nullptr;
+      return Error::InternalError;
     }
   }
 
@@ -331,11 +339,9 @@ Op_YCbCr444_to_YCbCr422_average<Pixel>::convert_colorspace(const std::shared_ptr
   if (bpp_y != bpp_cb ||
       bpp_y != bpp_cr) {
     // TODO: test with varying bit depths when we have a test image
-    return nullptr;
+    return Error::InternalError;
   }
 
-
-  auto colorProfile = input->get_color_profile_nclx();
 
   uint32_t width = input->get_width();
   uint32_t height = input->get_height();
@@ -347,23 +353,23 @@ Op_YCbCr444_to_YCbCr422_average<Pixel>::convert_colorspace(const std::shared_ptr
   uint32_t cwidth = (width + 1) / 2;
   uint32_t cheight = height;
 
-  if (!outimg->add_plane(heif_channel_Y, width, height, bpp_y) ||
-      !outimg->add_plane(heif_channel_Cb, cwidth, cheight, bpp_cb) ||
-      !outimg->add_plane(heif_channel_Cr, cwidth, cheight, bpp_cr)) {
-    return nullptr;
+  if (auto err = outimg->add_plane(heif_channel_Y, width, height, bpp_y, limits) ||
+                 outimg->add_plane(heif_channel_Cb, cwidth, cheight, bpp_cb, limits) ||
+                 outimg->add_plane(heif_channel_Cr, cwidth, cheight, bpp_cr, limits)) {
+    return err;
   }
 
   if (has_alpha) {
-    if (!outimg->add_plane(heif_channel_Alpha, width, height, bpp_a)) {
-      return nullptr;
+    if (auto err = outimg->add_plane(heif_channel_Alpha, width, height, bpp_a, limits)) {
+      return err;
     }
   }
 
-  const Pixel* in_y, * in_cb, * in_cr, * in_a;
-  uint32_t in_y_stride = 0, in_cb_stride = 0, in_cr_stride = 0, in_a_stride = 0;
+  const Pixel* in_y, * in_cb, * in_cr;
+  size_t in_y_stride = 0, in_cb_stride = 0, in_cr_stride = 0, in_a_stride = 0;
 
-  Pixel* out_y, * out_cb, * out_cr, * out_a;
-  uint32_t out_y_stride = 0, out_cb_stride = 0, out_cr_stride = 0, out_a_stride = 0;
+  Pixel* out_y, * out_cb, * out_cr;
+  size_t out_y_stride = 0, out_cb_stride = 0, out_cr_stride = 0, out_a_stride = 0;
 
   in_y = (const Pixel*) input->get_plane(heif_channel_Y, &in_y_stride);
   in_cb = (const Pixel*) input->get_plane(heif_channel_Cb, &in_cb_stride);
@@ -372,9 +378,12 @@ Op_YCbCr444_to_YCbCr422_average<Pixel>::convert_colorspace(const std::shared_ptr
   out_cb = (Pixel*) outimg->get_plane(heif_channel_Cb, &out_cb_stride);
   out_cr = (Pixel*) outimg->get_plane(heif_channel_Cr, &out_cr_stride);
 
+  const uint8_t* in_a;
+  uint8_t* out_a;
+
   if (has_alpha) {
-    in_a = (const Pixel*) input->get_plane(heif_channel_Alpha, &in_a_stride);
-    out_a = (Pixel*) outimg->get_plane(heif_channel_Alpha, &out_a_stride);
+    in_a = input->get_plane(heif_channel_Alpha, &in_a_stride);
+    out_a = outimg->get_plane(heif_channel_Alpha, &out_a_stride);
   }
   else {
     in_a = nullptr;
@@ -386,11 +395,9 @@ Op_YCbCr444_to_YCbCr422_average<Pixel>::convert_colorspace(const std::shared_ptr
     in_y_stride /= 2;
     in_cb_stride /= 2;
     in_cr_stride /= 2;
-    in_a_stride /= 2;
     out_y_stride /= 2;
     out_cb_stride /= 2;
     out_cr_stride /= 2;
-    out_a_stride /= 2;
   }
 
   // --- fill right border if the image size is odd
@@ -426,7 +433,8 @@ Op_YCbCr444_to_YCbCr422_average<Pixel>::convert_colorspace(const std::shared_ptr
     memcpy(&out_y[y * out_y_stride], &in_y[y * in_y_stride], copyWidth);
 
     if (has_alpha) {
-      memcpy(&out_a[y * out_a_stride], &in_a[y * in_a_stride], copyWidth);
+      uint32_t alphaCopyWidth = (bpp_a>8 ? width * 2 : width);
+      memcpy(&out_a[y * out_a_stride], &in_a[y * in_a_stride], alphaCopyWidth);
     }
   }
 
@@ -442,7 +450,8 @@ template<class Pixel>
 std::vector<ColorStateWithCost>
 Op_YCbCr420_bilinear_to_YCbCr444<Pixel>::state_after_conversion(const ColorState& input_state,
                                                                 const ColorState& target_state,
-                                                                const heif_color_conversion_options& options) const
+                                                                const heif_color_conversion_options& options,
+                                                                const heif_color_conversion_options_ext& options_ext) const
 {
   if (input_state.colorspace != heif_colorspace_YCbCr) {
     return {};
@@ -464,7 +473,7 @@ Op_YCbCr420_bilinear_to_YCbCr444<Pixel>::state_after_conversion(const ColorState
     return {};
   }
 
-  if (input_state.nclx_profile.get_matrix_coefficients() == 0) {
+  if (input_state.nclx.get_matrix_coefficients() == 0) {
     return {};
   }
 
@@ -478,20 +487,22 @@ Op_YCbCr420_bilinear_to_YCbCr444<Pixel>::state_after_conversion(const ColorState
   output_state.chroma = heif_chroma_444;
   output_state.has_alpha = input_state.has_alpha;  // we simply keep the old alpha plane
   output_state.bits_per_pixel = input_state.bits_per_pixel;
-  output_state.nclx_profile = input_state.nclx_profile;
+  output_state.nclx = input_state.nclx;
 
-  states.push_back({output_state, SpeedCosts_Unoptimized});
+  states.emplace_back(output_state, SpeedCosts_Unoptimized);
 
   return states;
 }
 
 
 template<class Pixel>
-std::shared_ptr<HeifPixelImage>
+Result<std::shared_ptr<HeifPixelImage>>
 Op_YCbCr420_bilinear_to_YCbCr444<Pixel>::convert_colorspace(const std::shared_ptr<const HeifPixelImage>& input,
                                                             const ColorState& input_state,
                                                             const ColorState& target_state,
-                                                            const heif_color_conversion_options& options) const
+                                                            const heif_color_conversion_options& options,
+                                                            const heif_color_conversion_options_ext& options_ext,
+                                                            const heif_security_limits* limits) const
 {
   bool hdr = !std::is_same<Pixel, uint8_t>::value;
 
@@ -510,14 +521,14 @@ Op_YCbCr420_bilinear_to_YCbCr444<Pixel>::convert_colorspace(const std::shared_pt
     if (bpp_y > 8 ||
         bpp_cb > 8 ||
         bpp_cr > 8) {
-      return nullptr;
+      return Error::InternalError;
     }
   }
   else {
     if (bpp_y <= 8 ||
         bpp_cb <= 8 ||
         bpp_cr <= 8) {
-      return nullptr;
+      return Error::InternalError;
     }
   }
 
@@ -525,11 +536,9 @@ Op_YCbCr420_bilinear_to_YCbCr444<Pixel>::convert_colorspace(const std::shared_pt
   if (bpp_y != bpp_cb ||
       bpp_y != bpp_cr) {
     // TODO: test with varying bit depths when we have a test image
-    return nullptr;
+    return Error::InternalError;
   }
 
-
-  auto colorProfile = input->get_color_profile_nclx();
 
   uint32_t width = input->get_width();
   uint32_t height = input->get_height();
@@ -538,23 +547,23 @@ Op_YCbCr420_bilinear_to_YCbCr444<Pixel>::convert_colorspace(const std::shared_pt
 
   outimg->create(width, height, heif_colorspace_YCbCr, heif_chroma_444);
 
-  if (!outimg->add_plane(heif_channel_Y, width, height, bpp_y) ||
-      !outimg->add_plane(heif_channel_Cb, width, height, bpp_cb) ||
-      !outimg->add_plane(heif_channel_Cr, width, height, bpp_cr)) {
-    return nullptr;
+  if (auto err = outimg->add_plane(heif_channel_Y, width, height, bpp_y, limits) ||
+                 outimg->add_plane(heif_channel_Cb, width, height, bpp_cb, limits) ||
+                 outimg->add_plane(heif_channel_Cr, width, height, bpp_cr, limits)) {
+    return err;
   }
 
   if (has_alpha) {
-    if (!outimg->add_plane(heif_channel_Alpha, width, height, bpp_a)) {
-      return nullptr;
+    if (auto err = outimg->add_plane(heif_channel_Alpha, width, height, bpp_a, limits)) {
+      return err;
     }
   }
 
-  const Pixel* in_y, * in_cb, * in_cr, * in_a;
-  uint32_t in_y_stride = 0, in_cb_stride = 0, in_cr_stride = 0, in_a_stride = 0;
+  const Pixel* in_y, * in_cb, * in_cr;
+  size_t in_y_stride = 0, in_cb_stride = 0, in_cr_stride = 0, in_a_stride = 0;
 
-  Pixel* out_y, * out_cb, * out_cr, * out_a;
-  uint32_t out_y_stride = 0, out_cb_stride = 0, out_cr_stride = 0, out_a_stride = 0;
+  Pixel* out_y, * out_cb, * out_cr;
+  size_t out_y_stride = 0, out_cb_stride = 0, out_cr_stride = 0, out_a_stride = 0;
 
   in_y = (const Pixel*) input->get_plane(heif_channel_Y, &in_y_stride);
   in_cb = (const Pixel*) input->get_plane(heif_channel_Cb, &in_cb_stride);
@@ -563,9 +572,12 @@ Op_YCbCr420_bilinear_to_YCbCr444<Pixel>::convert_colorspace(const std::shared_pt
   out_cb = (Pixel*) outimg->get_plane(heif_channel_Cb, &out_cb_stride);
   out_cr = (Pixel*) outimg->get_plane(heif_channel_Cr, &out_cr_stride);
 
+  const uint8_t* in_a;
+  uint8_t* out_a;
+
   if (has_alpha) {
-    in_a = (const Pixel*) input->get_plane(heif_channel_Alpha, &in_a_stride);
-    out_a = (Pixel*) outimg->get_plane(heif_channel_Alpha, &out_a_stride);
+    in_a = input->get_plane(heif_channel_Alpha, &in_a_stride);
+    out_a = outimg->get_plane(heif_channel_Alpha, &out_a_stride);
   }
   else {
     in_a = nullptr;
@@ -577,11 +589,9 @@ Op_YCbCr420_bilinear_to_YCbCr444<Pixel>::convert_colorspace(const std::shared_pt
     in_y_stride /= 2;
     in_cb_stride /= 2;
     in_cr_stride /= 2;
-    in_a_stride /= 2;
     out_y_stride /= 2;
     out_cb_stride /= 2;
     out_cr_stride /= 2;
-    out_a_stride /= 2;
   }
 
   /*
@@ -702,7 +712,8 @@ Op_YCbCr420_bilinear_to_YCbCr444<Pixel>::convert_colorspace(const std::shared_pt
     memcpy(&out_y[y * out_y_stride], &in_y[y * in_y_stride], copyWidth);
 
     if (has_alpha) {
-      memcpy(&out_a[y * out_a_stride], &in_a[y * in_a_stride], copyWidth);
+      uint32_t alphaCopyWidth = (bpp_a > 8 ? width * 2 : width);
+      memcpy(&out_a[y * out_a_stride], &in_a[y * in_a_stride], alphaCopyWidth);
     }
   }
 
@@ -719,7 +730,8 @@ template<class Pixel>
 std::vector<ColorStateWithCost>
 Op_YCbCr422_bilinear_to_YCbCr444<Pixel>::state_after_conversion(const ColorState& input_state,
                                                                 const ColorState& target_state,
-                                                                const heif_color_conversion_options& options) const
+                                                                const heif_color_conversion_options& options,
+                                                                const heif_color_conversion_options_ext& options_ext) const
 {
   if (input_state.colorspace != heif_colorspace_YCbCr) {
     return {};
@@ -741,7 +753,7 @@ Op_YCbCr422_bilinear_to_YCbCr444<Pixel>::state_after_conversion(const ColorState
     return {};
   }
 
-  if (input_state.nclx_profile.get_matrix_coefficients() == 0) {
+  if (input_state.nclx.get_matrix_coefficients() == 0) {
     return {};
   }
 
@@ -755,20 +767,22 @@ Op_YCbCr422_bilinear_to_YCbCr444<Pixel>::state_after_conversion(const ColorState
   output_state.chroma = heif_chroma_444;
   output_state.has_alpha = input_state.has_alpha;  // we simply keep the old alpha plane
   output_state.bits_per_pixel = input_state.bits_per_pixel;
-  output_state.nclx_profile = input_state.nclx_profile;
+  output_state.nclx = input_state.nclx;
 
-  states.push_back({output_state, SpeedCosts_Unoptimized});
+  states.emplace_back(output_state, SpeedCosts_Unoptimized);
 
   return states;
 }
 
 
 template<class Pixel>
-std::shared_ptr<HeifPixelImage>
+Result<std::shared_ptr<HeifPixelImage>>
 Op_YCbCr422_bilinear_to_YCbCr444<Pixel>::convert_colorspace(const std::shared_ptr<const HeifPixelImage>& input,
                                                             const ColorState& input_state,
                                                             const ColorState& target_state,
-                                                            const heif_color_conversion_options& options) const
+                                                            const heif_color_conversion_options& options,
+                                                            const heif_color_conversion_options_ext& options_ext,
+                                                            const heif_security_limits* limits) const
 {
   bool hdr = !std::is_same<Pixel, uint8_t>::value;
 
@@ -787,14 +801,14 @@ Op_YCbCr422_bilinear_to_YCbCr444<Pixel>::convert_colorspace(const std::shared_pt
     if (bpp_y > 8 ||
         bpp_cb > 8 ||
         bpp_cr > 8) {
-      return nullptr;
+      return Error::InternalError;
     }
   }
   else {
     if (bpp_y <= 8 ||
         bpp_cb <= 8 ||
         bpp_cr <= 8) {
-      return nullptr;
+      return Error::InternalError;
     }
   }
 
@@ -802,11 +816,9 @@ Op_YCbCr422_bilinear_to_YCbCr444<Pixel>::convert_colorspace(const std::shared_pt
   if (bpp_y != bpp_cb ||
       bpp_y != bpp_cr) {
     // TODO: test with varying bit depths when we have a test image
-    return nullptr;
+    return Error::InternalError;
   }
 
-
-  auto colorProfile = input->get_color_profile_nclx();
 
   uint32_t width = input->get_width();
   uint32_t height = input->get_height();
@@ -815,23 +827,23 @@ Op_YCbCr422_bilinear_to_YCbCr444<Pixel>::convert_colorspace(const std::shared_pt
 
   outimg->create(width, height, heif_colorspace_YCbCr, heif_chroma_444);
 
-  if (!outimg->add_plane(heif_channel_Y, width, height, bpp_y) ||
-      !outimg->add_plane(heif_channel_Cb, width, height, bpp_cb) ||
-      !outimg->add_plane(heif_channel_Cr, width, height, bpp_cr)) {
-    return nullptr;
+  if (auto err = outimg->add_plane(heif_channel_Y, width, height, bpp_y, limits) ||
+                 outimg->add_plane(heif_channel_Cb, width, height, bpp_cb, limits) ||
+                 outimg->add_plane(heif_channel_Cr, width, height, bpp_cr, limits)) {
+    return err;
   }
 
   if (has_alpha) {
-    if (!outimg->add_plane(heif_channel_Alpha, width, height, bpp_a)) {
-      return nullptr;
+    if (auto err = outimg->add_plane(heif_channel_Alpha, width, height, bpp_a, limits)) {
+      return err;
     }
   }
 
-  const Pixel* in_y, * in_cb, * in_cr, * in_a;
-  uint32_t in_y_stride = 0, in_cb_stride = 0, in_cr_stride = 0, in_a_stride = 0;
+  const Pixel* in_y, * in_cb, * in_cr;
+  size_t in_y_stride = 0, in_cb_stride = 0, in_cr_stride = 0, in_a_stride = 0;
 
-  Pixel* out_y, * out_cb, * out_cr, * out_a;
-  uint32_t out_y_stride = 0, out_cb_stride = 0, out_cr_stride = 0, out_a_stride = 0;
+  Pixel* out_y, * out_cb, * out_cr;
+  size_t out_y_stride = 0, out_cb_stride = 0, out_cr_stride = 0, out_a_stride = 0;
 
   in_y = (const Pixel*) input->get_plane(heif_channel_Y, &in_y_stride);
   in_cb = (const Pixel*) input->get_plane(heif_channel_Cb, &in_cb_stride);
@@ -840,9 +852,12 @@ Op_YCbCr422_bilinear_to_YCbCr444<Pixel>::convert_colorspace(const std::shared_pt
   out_cb = (Pixel*) outimg->get_plane(heif_channel_Cb, &out_cb_stride);
   out_cr = (Pixel*) outimg->get_plane(heif_channel_Cr, &out_cr_stride);
 
+  const uint8_t* in_a;
+  uint8_t* out_a;
+
   if (has_alpha) {
-    in_a = (const Pixel*) input->get_plane(heif_channel_Alpha, &in_a_stride);
-    out_a = (Pixel*) outimg->get_plane(heif_channel_Alpha, &out_a_stride);
+    in_a = input->get_plane(heif_channel_Alpha, &in_a_stride);
+    out_a = outimg->get_plane(heif_channel_Alpha, &out_a_stride);
   }
   else {
     in_a = nullptr;
@@ -854,11 +869,9 @@ Op_YCbCr422_bilinear_to_YCbCr444<Pixel>::convert_colorspace(const std::shared_pt
     in_y_stride /= 2;
     in_cb_stride /= 2;
     in_cr_stride /= 2;
-    in_a_stride /= 2;
     out_y_stride /= 2;
     out_cb_stride /= 2;
     out_cr_stride /= 2;
-    out_a_stride /= 2;
   }
 
   /*
@@ -925,7 +938,8 @@ Op_YCbCr422_bilinear_to_YCbCr444<Pixel>::convert_colorspace(const std::shared_pt
     memcpy(&out_y[y * out_y_stride], &in_y[y * in_y_stride], copyWidth);
 
     if (has_alpha) {
-      memcpy(&out_a[y * out_a_stride], &in_a[y * in_a_stride], copyWidth);
+      uint32_t alphaCopyWidth = (bpp_a > 8 ? width * 2 : width);
+      memcpy(&out_a[y * out_a_stride], &in_a[y * in_a_stride], alphaCopyWidth);
     }
   }
 

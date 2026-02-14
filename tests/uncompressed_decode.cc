@@ -23,9 +23,9 @@
   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
   SOFTWARE.
 */
-#include "catch.hpp"
+#include "catch_amalgamated.hpp"
 #include "libheif/heif.h"
-#include "libheif/api_structs.h"
+#include "api_structs.h"
 #include <cstdint>
 #include <stdio.h>
 #include "test_utils.h"
@@ -33,7 +33,7 @@
 
 #include "uncompressed_decode.h"
 
-void check_image_handle_size(struct heif_context *&context) {
+void check_image_handle_size(heif_context *&context) {
   heif_image_handle *handle = get_primary_image_handle(context);
   int ispe_width = heif_image_handle_get_ispe_width(handle);
   REQUIRE(ispe_width == 30);
@@ -55,7 +55,7 @@ TEST_CASE("check image handle size") {
   heif_context_free(context);
 }
 
-void check_image_handle_size_subsampled(struct heif_context *&context) {
+void check_image_handle_size_subsampled(heif_context *&context) {
   heif_image_handle *handle = get_primary_image_handle(context);
   int ispe_width = heif_image_handle_get_ispe_width(handle);
   REQUIRE(ispe_width == 32);
@@ -82,8 +82,7 @@ TEST_CASE("check image handle alpha channel") {
   auto file = GENERATE(FILES, MONO_FILES, ALL_YUV_FILES);
   auto context = get_context_for_test_file(file);
   INFO("file name: " << file);
-  // int expect_alpha = (strchr(file, 'A') == NULL) ? 0 : 1;
-  int expect_alpha = 0; // TODO: fix this
+  int expect_alpha = (strchr(file, 'A') == NULL) ? 0 : 1;
   heif_image_handle *handle = get_primary_image_handle(context);
   int has_alpha = heif_image_handle_has_alpha_channel(handle);
   REQUIRE(has_alpha == expect_alpha);
@@ -92,7 +91,7 @@ TEST_CASE("check image handle alpha channel") {
   heif_context_free(context);
 }
 
-void check_image_handle_no_depth_images(struct heif_context *&context) {
+void check_image_handle_no_depth_images(heif_context *&context) {
   heif_image_handle *handle = get_primary_image_handle(context);
 
   int has_depth = heif_image_handle_has_depth_image(handle);
@@ -112,7 +111,7 @@ TEST_CASE("check image handle no depth images") {
   heif_context_free(context);
 }
 
-void check_image_handle_no_thumbnails(struct heif_context *&context) {
+void check_image_handle_no_thumbnails(heif_context *&context) {
   heif_image_handle *handle = get_primary_image_handle(context);
 
   int numthumbs = heif_image_handle_get_number_of_thumbnails(handle);
@@ -129,7 +128,7 @@ TEST_CASE("check image handle no thumbnails") {
   heif_context_free(context);
 }
 
-void check_image_handle_no_aux_images(struct heif_context *&context) {
+void check_image_handle_no_aux_images(heif_context *&context) {
   heif_image_handle *handle = get_primary_image_handle(context);
 
   int num_aux = heif_image_handle_get_number_of_auxiliary_images(handle, 0);
@@ -146,7 +145,7 @@ TEST_CASE("check image handle no auxiliary images") {
   heif_context_free(context);
 }
 
-void check_image_handle_no_metadata(struct heif_context *&context) {
+void check_image_handle_no_metadata(heif_context *&context) {
   heif_image_handle *handle = get_primary_image_handle(context);
 
   int num_metadata_blocks =
@@ -164,6 +163,7 @@ TEST_CASE("check image handle no metadata blocks") {
   heif_context_free(context);
 }
 
-
-
+TEST_CASE("check uncompressed is advertised") {
+  REQUIRE(heif_have_decoder_for_format(heif_compression_uncompressed));
+}
 

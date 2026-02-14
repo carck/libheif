@@ -25,9 +25,10 @@
 */
 
 #include <iomanip>
-#include "catch.hpp"
+#include "catch_amalgamated.hpp"
 #include "color-conversion/colorconversion.h"
 #include "pixelimage.h"
+#include <cmath>
 
 // Enable for more verbose test output.
 constexpr bool kEnableDebugOutput = false;
@@ -68,13 +69,13 @@ uint16_t SwapBytesIfNeeded(uint16_t v, heif_chroma chroma) {
 template <typename T>
 std::string PrintChannel(const HeifPixelImage& image, heif_channel channel) {
   heif_chroma chroma = image.get_chroma_format();
-  int num_interleaved = num_interleaved_pixels_per_plane(chroma);
+  int num_interleaved = num_interleaved_components_per_plane(chroma);
   bool is_interleaved = num_interleaved > 1;
   uint32_t max_cols = is_interleaved ? 3 : 10;
   uint32_t max_rows = 10;
   uint32_t width = std::min(image.get_width(channel), max_cols);
   uint32_t height = std::min(image.get_height(channel), max_rows);
-  uint32_t stride;
+  size_t stride;
   const T* p = (T*)image.get_plane(channel, &stride);
   stride /= (int)sizeof(T);
   int bpp = image.get_bits_per_pixel(channel);
@@ -122,15 +123,19 @@ double GetPsnr(const HeifPixelImage& original, const HeifPixelImage& compressed,
   uint32_t h = original.get_height(channel);
   heif_chroma chroma = original.get_chroma_format();
 
-  uint32_t orig_stride;
-  uint32_t compressed_stride;
+  if (w == 0 || h == 0) {
+    return 0;
+  }
+
+  size_t orig_stride;
+  size_t compressed_stride;
   const T* orig_p = (T*)original.get_plane(channel, &orig_stride);
   const T* compressed_p = (T*)compressed.get_plane(channel, &compressed_stride);
   orig_stride /= (int)sizeof(T);
   compressed_stride /= (int)sizeof(T);
   double mse = 0.0;
 
-  int num_interleaved = num_interleaved_pixels_per_plane(chroma);
+  int num_interleaved = num_interleaved_components_per_plane(chroma);
   int alpha_max = (1 << original.get_bits_per_pixel(channel)) - 1;
   CAPTURE(expect_alpha_max);
   for (uint32_t y = 0; y < h; y++) {
@@ -223,8 +228,7 @@ std::vector<Plane> GetPlanes(const ColorState& state, int width, int height) {
 bool MakeTestImage(const ColorState& state, int width, int height,
                    HeifPixelImage* image) {
   image->create(width, height, state.colorspace, state.chroma);
-  auto target_nclx_profile = std::make_shared<color_profile_nclx>(state.nclx_profile);
-  image->set_color_profile_nclx(target_nclx_profile);
+  image->set_color_profile_nclx(state.nclx);
   std::vector<Plane> planes = GetPlanes(state, width, height);
   if (planes.empty()) return false;
   for (size_t i = 0; i < planes.size(); ++i) {
@@ -232,15 +236,18 @@ bool MakeTestImage(const ColorState& state, int width, int height,
     int half_max = (1 << (plane.bit_depth -1));
     uint16_t value = SwapBytesIfNeeded(
         static_cast<uint16_t>(half_max + i * 10 + i), state.chroma);
-    image->fill_new_plane(plane.channel, value, plane.width, plane.height,
-                          plane.bit_depth);
+    auto err = image->fill_new_plane(plane.channel, value, plane.width, plane.height,
+                                     plane.bit_depth, nullptr);
+    if (err) {
+      return false;
+    }
   }
   return true;
 }
 
 static bool NclxMatches(heif_colorspace colorspace,
-                        const color_profile_nclx& src_nclx,
-                        const color_profile_nclx& dst_nclx) {
+                        const nclx_profile& src_nclx,
+                        const nclx_profile& dst_nclx) {
   if (colorspace != heif_colorspace_YCbCr) {
     return true;
   }
@@ -254,16 +261,36 @@ static bool NclxMatches(heif_colorspace colorspace,
   return true;
 }
 
+void nclx_default_if_undefined(ColorState& state)
+{
+  if (state.nclx.get_colour_primaries() == heif_color_primaries_unspecified) {
+    state.nclx.set_colour_primaries(1);
+  }
+
+  if (state.nclx.get_matrix_coefficients() == heif_matrix_coefficients_unspecified) {
+    state.nclx.set_matrix_coefficients(6);
+  }
+
+  if (state.nclx.get_transfer_characteristics() == heif_transfer_characteristic_unspecified) {
+    state.nclx.set_transfer_characteristics(13);
+  }
+}
+
+
 // Converts from 'input_state' to 'target_state' and checks that the resulting
 // image has the expected shape. If the reverse conversion is also supported,
 // does a round-trip back to the original state and checks the PSNR.
 // If 'require_supported' is true, checks that the conversion from 'input_state'
 // to 'target_state' is supported, otherwise, exists silently for unsupported
 // conversions.
-void TestConversion(const std::string& test_name, const ColorState& input_state,
-                    const ColorState& target_state,
+void TestConversion(const std::string& test_name, ColorState input_state,
+                    ColorState target_state,
                     const heif_color_conversion_options& options,
+                    const heif_color_conversion_options_ext& options_ext,
                     bool require_supported = true) {
+  nclx_default_if_undefined(input_state);
+  nclx_default_if_undefined(target_state);
+
   INFO(test_name);
   INFO("downsampling=" << options.preferred_chroma_downsampling_algorithm
                        << " upsampling="
@@ -272,7 +299,7 @@ void TestConversion(const std::string& test_name, const ColorState& input_state,
                        << (bool)options.only_use_preferred_chroma_algorithm);
 
   ColorConversionPipeline pipeline;
-  bool supported = pipeline.construct_pipeline(input_state, target_state, options);
+  bool supported = pipeline.construct_pipeline(input_state, target_state, options, options_ext);
   if (require_supported) REQUIRE(supported);
   if (!supported) return;
   INFO("conversion pipeline: " << pipeline.debug_dump_pipeline());
@@ -283,8 +310,9 @@ void TestConversion(const std::string& test_name, const ColorState& input_state,
   int height = 8;
   REQUIRE(MakeTestImage(input_state, width, height, in_image.get()));
 
-  std::shared_ptr<HeifPixelImage> out_image;
-  out_image = pipeline.convert_image(in_image);
+  auto out_image_result = pipeline.convert_image(in_image, nullptr);
+  REQUIRE(out_image_result);
+  std::shared_ptr<HeifPixelImage> out_image = *out_image_result;
 
   REQUIRE(out_image != nullptr);
   CHECK(out_image->get_colorspace() == target_state.colorspace);
@@ -292,7 +320,7 @@ void TestConversion(const std::string& test_name, const ColorState& input_state,
   CHECK(out_image->has_alpha() == target_state.has_alpha);
   for (const Plane& plane : GetPlanes(target_state, width, height)) {
     INFO("Channel: " << plane.channel);
-    uint32_t stride;
+    size_t stride;
     CHECK(out_image->get_plane(plane.channel, &stride) != nullptr);
     CHECK(out_image->get_bits_per_pixel(plane.channel) ==
           target_state.bits_per_pixel);
@@ -308,11 +336,11 @@ void TestConversion(const std::string& test_name, const ColorState& input_state,
 
   // Convert back in the other direction (if supported).
   ColorConversionPipeline reverse_pipeline;
-  if (reverse_pipeline.construct_pipeline(target_state, input_state, options)) {
+  if (reverse_pipeline.construct_pipeline(target_state, input_state, options, options_ext)) {
     INFO("reverse pipeline: " << reverse_pipeline.debug_dump_pipeline());
-    std::shared_ptr<HeifPixelImage> recovered_image =
-        reverse_pipeline.convert_image(out_image);
-    REQUIRE(recovered_image != nullptr);
+    auto recovered_image_result =reverse_pipeline.convert_image(out_image, heif_get_disabled_security_limits());
+    REQUIRE(recovered_image_result);
+    std::shared_ptr<HeifPixelImage> recovered_image = *recovered_image_result;
     // If the alpha plane was lost in the target state, it should come back
     // as the max value for the given bpp, i.e. (1<<bpp)-1
     bool expect_alpha_max = !target_state.has_alpha;
@@ -324,8 +352,8 @@ void TestConversion(const std::string& test_name, const ColorState& input_state,
           input_state.chroma != heif_chroma_422 &&
           target_state.chroma != heif_chroma_420 &&
           target_state.chroma != heif_chroma_422)) &&
-        NclxMatches(input_state.colorspace, input_state.nclx_profile,
-                    target_state.nclx_profile);
+        NclxMatches(input_state.colorspace, input_state.nclx,
+                    target_state.nclx);
     double expected_psnr = expect_lossless ? 100. : 38.;
 
     for (const Plane& plane : GetPlanes(input_state, width, height)) {
@@ -353,7 +381,8 @@ void TestConversion(const std::string& test_name, const ColorState& input_state,
 void TestFailingConversion(const std::string& test_name,
                            const ColorState& input_state,
                            const ColorState& target_state,
-                           const heif_color_conversion_options& options = {}) {
+                           const heif_color_conversion_options& options,
+                           const heif_color_conversion_options_ext& options_ext) {
   INFO(test_name);
   INFO("downsampling=" << options.preferred_chroma_downsampling_algorithm
                        << " upsampling="
@@ -362,7 +391,7 @@ void TestFailingConversion(const std::string& test_name,
                        << (bool)options.only_use_preferred_chroma_algorithm);
   ColorConversionPipeline pipeline;
   bool construct_pipeline_res =
-      pipeline.construct_pipeline(input_state, target_state, options);
+      pipeline.construct_pipeline(input_state, target_state, options, options_ext);
   INFO("conversion pipeline: " << pipeline.debug_dump_pipeline());
   REQUIRE_FALSE(construct_pipeline_res);
 }
@@ -441,11 +470,11 @@ std::vector<ColorState> GetAllColorStates(const std::vector<heif_matrix_coeffici
           if (colorspace == heif_colorspace_YCbCr) {
             for (heif_matrix_coefficients matrix : matrices) {
               for (bool full_range : {true, false}) {
-                color_state.nclx_profile.set_full_range_flag(full_range);
-                color_state.nclx_profile.set_matrix_coefficients(matrix);
-                color_state.nclx_profile.set_colour_primaries(
+                color_state.nclx.set_full_range_flag(full_range);
+                color_state.nclx.set_matrix_coefficients(matrix);
+                color_state.nclx.set_colour_primaries(
                     heif_color_primaries_ITU_R_BT_709_5);
-                color_state.nclx_profile.set_transfer_characteristics(
+                color_state.nclx.set_transfer_characteristics(
                     heif_color_primaries_SMPTE_240M);
                 color_states.push_back(color_state);
               }
@@ -476,6 +505,10 @@ TEST_CASE("All conversions", "[heif_image]") {
       .preferred_chroma_upsampling_algorithm = upsampling,
       .only_use_preferred_chroma_algorithm = only_use_preferred_chroma_algorithm};
 
+  heif_color_conversion_options_ext options_ext = {
+      .alpha_composition_mode = heif_alpha_composition_mode_none
+  };
+
   // Test all source and destination state combinations.
   ColorState src_state = GENERATE(
       from_range(GetAllColorStates(GetSupportedMatrices())));
@@ -501,7 +534,7 @@ TEST_CASE("All conversions", "[heif_image]") {
 
   std::ostringstream os;
   os << "from: " << src_state << "\nto:   " << dst_state;
-  TestConversion(os.str(), src_state, dst_state, options, require_supported);
+  TestConversion(os.str(), src_state, dst_state, options, options_ext, require_supported);
 }
 
 TEST_CASE("Unsupported matrices", "[heif_image]") {
@@ -522,23 +555,27 @@ TEST_CASE("Unsupported matrices", "[heif_image]") {
       .preferred_chroma_upsampling_algorithm = upsampling,
       .only_use_preferred_chroma_algorithm = only_use_preferred_chroma_algorithm};
 
+  heif_color_conversion_options_ext options_ext = {
+      .alpha_composition_mode = heif_alpha_composition_mode_none
+  };
+
   ColorState src_state =
       GENERATE(from_range(GetAllColorStates(GetUnsupportedMatrices())));
   ColorState dst_state =
       GENERATE(from_range(GetAllColorStates(GetUnsupportedMatrices())));
-  color_profile_nclx default_nclx;
+  nclx_profile default_nclx = nclx_profile::defaults();
 
   if (src_state == dst_state ||
-      NclxMatches(src_state.colorspace, src_state.nclx_profile,
-                  dst_state.nclx_profile) ||
-      (src_state.nclx_profile.get_matrix_coefficients() == default_nclx.get_matrix_coefficients() ||
-       dst_state.nclx_profile.get_matrix_coefficients() == default_nclx.get_matrix_coefficients())) {
+      NclxMatches(src_state.colorspace, src_state.nclx,
+                  dst_state.nclx) ||
+      (src_state.nclx.get_matrix_coefficients() == default_nclx.get_matrix_coefficients() ||
+       dst_state.nclx.get_matrix_coefficients() == default_nclx.get_matrix_coefficients())) {
     return;
   }
 
   std::ostringstream os;
   os << "from: " << src_state << "\nto:   " << dst_state;
-  TestFailingConversion(os.str(), src_state, dst_state, options);
+  TestFailingConversion(os.str(), src_state, dst_state, options, options_ext);
 }
 
 TEST_CASE("Sharp yuv conversion", "[heif_image]") {
@@ -548,61 +585,66 @@ TEST_CASE("Sharp yuv conversion", "[heif_image]") {
       .preferred_chroma_upsampling_algorithm = heif_chroma_upsampling_bilinear,
       .only_use_preferred_chroma_algorithm = true};
 
+  heif_color_conversion_options_ext options_ext = {
+      .alpha_composition_mode = heif_alpha_composition_mode_none
+  };
+
 #ifdef HAVE_LIBSHARPYUV
   TestConversion("### interleaved RGBA -> YCbCr 420 with sharp yuv",
                  {heif_colorspace_RGB, heif_chroma_interleaved_RGBA, true, 8},
                  {heif_colorspace_YCbCr, heif_chroma_420, true, 8},
-                 sharp_yuv_options);
+                 sharp_yuv_options, options_ext);
   TestConversion("### interleaved RGB 10bit -> YCbCr 420 10bit with sharp yuv",
                  {heif_colorspace_RGB, heif_chroma_interleaved_RGB, false, 8},
                  {heif_colorspace_YCbCr, heif_chroma_420, false, 8},
-                 sharp_yuv_options);
+                 sharp_yuv_options, options_ext);
 
   TestConversion("### interleaved RGBA 12bit big endian -> YCbCr 420 12bit with sharp yuv",
                  {heif_colorspace_RGB, heif_chroma_interleaved_RRGGBBAA_BE, true, 12},
                  {heif_colorspace_YCbCr, heif_chroma_420, true, 12},
-                 sharp_yuv_options);
+                 sharp_yuv_options, options_ext);
   TestConversion("### interleaved RGBA 12bit little endian -> YCbCr 420 12bit with sharp yuv",
                  {heif_colorspace_RGB, heif_chroma_interleaved_RRGGBBAA_LE, true, 12},
                  {heif_colorspace_YCbCr, heif_chroma_420, true, 12},
-                 sharp_yuv_options);
+                 sharp_yuv_options, options_ext);
   TestConversion("### planar RGB -> YCbCr 420 with sharp yuv",
                  {heif_colorspace_RGB, heif_chroma_444, false, 8},
                  {heif_colorspace_YCbCr, heif_chroma_420, false, 8},
-                 sharp_yuv_options);
+                 sharp_yuv_options, options_ext);
   TestConversion("### planar RGBA -> YCbCr 420 with sharp yuv",
                  {heif_colorspace_RGB, heif_chroma_444, true, 8},
                  {heif_colorspace_YCbCr, heif_chroma_420, true, 8},
-                 sharp_yuv_options);
+                 sharp_yuv_options, options_ext);
   TestConversion("### planar RGB 10bit -> YCbCr 420 10bit with sharp yuv",
                  {heif_colorspace_RGB, heif_chroma_444, false, 10},
                  {heif_colorspace_YCbCr, heif_chroma_420, false, 10},
-                 sharp_yuv_options);
+                 sharp_yuv_options, options_ext);
   TestConversion("### planar RGBA 10bit -> YCbCr 420 10bit with sharp yuv",
                  {heif_colorspace_RGB, heif_chroma_444, true, 10},
                  {heif_colorspace_YCbCr, heif_chroma_420, true, 10},
-                 sharp_yuv_options);
+                 sharp_yuv_options, options_ext);
 #else
   // Should fail if libsharpyuv is not compiled in.
   TestFailingConversion(
       "### interleaved RGBA -> YCbCr 420 with sharp yuv NOT COMPILED IN",
       {heif_colorspace_RGB, heif_chroma_interleaved_RGBA, true, 8},
-      {heif_colorspace_YCbCr, heif_chroma_420, false, 8}, sharp_yuv_options);
+      {heif_colorspace_YCbCr, heif_chroma_420, false, 8}, sharp_yuv_options, options_ext);
   WARN("Tests built without sharp yuv");
 #endif
 
   TestFailingConversion(
       "### interleaved RGBA -> YCbCr 422 with sharp yuv (not supported!)",
       {heif_colorspace_RGB, heif_chroma_interleaved_RGBA, true, 8},
-      {heif_colorspace_YCbCr, heif_chroma_422, false, 8}, sharp_yuv_options);
+      {heif_colorspace_YCbCr, heif_chroma_422, false, 8}, sharp_yuv_options, options_ext);
 }
 
 
 static void fill_plane(std::shared_ptr<HeifPixelImage>& img, heif_channel channel, int w, int h, const std::vector<uint8_t>& pixels)
 {
-  img->add_plane(channel, w, h, 8);
+  auto error = img->add_plane(channel, w, h, 8, nullptr);
+  REQUIRE(!error);
 
-  uint32_t stride;
+  size_t stride;
   uint8_t* p = img->get_plane(channel, &stride);
 
   for (int y = 0; y < h; y++) {
@@ -619,7 +661,7 @@ static void assert_plane(std::shared_ptr<HeifPixelImage>& img, heif_channel chan
   uint32_t w = img->get_width(channel);
   uint32_t h = img->get_height(channel);
 
-  uint32_t stride;
+  size_t stride;
   uint8_t* p = img->get_plane(channel, &stride);
 
   for (uint32_t y = 0; y < h; y++) {
@@ -641,7 +683,9 @@ TEST_CASE("Bilinear upsampling", "[heif_image]")
   std::shared_ptr<HeifPixelImage> img = std::make_shared<HeifPixelImage>();
   img->create(4, 4, heif_colorspace_YCbCr, heif_chroma_420);
 
-  img->fill_new_plane(heif_channel_Y, 128, 4,4, 8);
+  auto error = img->fill_new_plane(heif_channel_Y, 128, 4,4, 8, nullptr);
+  REQUIRE(!error);
+
   fill_plane(img, heif_channel_Cb, 2,2,
              {10, 40,
               100, 240});
@@ -649,7 +693,10 @@ TEST_CASE("Bilinear upsampling", "[heif_image]")
              {255, 200,
               50, 0});
 
-  std::shared_ptr<HeifPixelImage> out = convert_colorspace(img, heif_colorspace_YCbCr, heif_chroma_444, nullptr, 8, options);
+  auto conversionResult = convert_colorspace(img, heif_colorspace_YCbCr, heif_chroma_444,
+                                             nclx_profile::defaults(), 8, options, nullptr, heif_get_disabled_security_limits());
+  REQUIRE(conversionResult);
+  std::shared_ptr<HeifPixelImage> out = *conversionResult;
 
   assert_plane(out, heif_channel_Cb,
                {
@@ -677,16 +724,20 @@ TEST_CASE("RGB 5-6-5 to RGB")
   const uint32_t width = 3;
   const uint32_t height = 2;
   img->create(width, height, heif_colorspace_RGB, heif_chroma_444);
-  img->add_plane(heif_channel_R, width, height, 5);
+  Error err;
+  err = img->add_plane(heif_channel_R, width, height, 5, heif_get_disabled_security_limits());
+  REQUIRE(!err);
   REQUIRE(img->get_bits_per_pixel(heif_channel_R) == 5);
-  img->add_plane(heif_channel_G, width, height, 6);
+  err = img->add_plane(heif_channel_G, width, height, 6, heif_get_disabled_security_limits());
+  REQUIRE(!err);
   REQUIRE(img->get_bits_per_pixel(heif_channel_G) == 6);
-  img->add_plane(heif_channel_B, width, height, 5);
+  err = img->add_plane(heif_channel_B, width, height, 5, heif_get_disabled_security_limits());
+  REQUIRE(!err);
   REQUIRE(img->get_bits_per_pixel(heif_channel_B) == 5);
 
   uint8_t v = 1;
   for (heif_channel plane: {heif_channel_R, heif_channel_G, heif_channel_B}) {
-    uint32_t dst_stride = 0;
+    size_t dst_stride = 0;
     uint8_t *dst = img->get_plane(plane, &dst_stride);
     for (uint32_t y = 0; y < height; y++) {
       for (uint32_t x = 0; x < width; x++) {
@@ -696,7 +747,10 @@ TEST_CASE("RGB 5-6-5 to RGB")
     }
   }
 
-  std::shared_ptr<HeifPixelImage> out = convert_colorspace(img, heif_colorspace_RGB, heif_chroma_444, nullptr, 8, options);
+  auto conversionResult = convert_colorspace(img, heif_colorspace_RGB, heif_chroma_444,
+                                             nclx_profile::defaults(), 8, options, nullptr, heif_get_disabled_security_limits());
+  REQUIRE(conversionResult);
+  std::shared_ptr<HeifPixelImage> out = *conversionResult;
 
   assert_plane(out, heif_channel_R, {8, 16, 24, 33, 41, 49});
   assert_plane(out, heif_channel_G, {28, 32, 36, 40, 44, 48});

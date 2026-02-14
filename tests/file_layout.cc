@@ -23,9 +23,9 @@
   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
   SOFTWARE.
 */
-#include "catch.hpp"
+#include "catch_amalgamated.hpp"
 #include "libheif/heif.h"
-#include "libheif/api_structs.h"
+#include "api_structs.h"
 #include <cstdint>
 #include <stdio.h>
 #include "test_utils.h"
@@ -41,7 +41,7 @@ TEST_CASE("parse file layout") {
   auto reader = std::make_shared<StreamReader_istream>(std::move(istr));
 
   FileLayout file;
-  Error err = file.read(reader);
+  Error err = file.read(reader, heif_get_global_security_limits());
 
   REQUIRE(err.error_code == heif_error_Ok);
 

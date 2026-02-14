@@ -31,14 +31,15 @@
 #include "error.h"
 
 #include "libheif/heif.h"
+#include "libheif/heif_experimental.h"
 #include "libheif/heif_plugin.h"
 #include "bitstream.h"
 
 #include "box.h" // only for color_profile, TODO: maybe move the color_profiles to its own header
-
+#include "file.h"
 #include "region.h"
 
-class HeifContext;
+#include "text.h"
 
 class HeifFile;
 
@@ -46,11 +47,16 @@ class HeifPixelImage;
 
 class StreamWriter;
 
-class ImageOverlay;
-
 class ImageItem;
-class ImageItem_Overlay;
-class ImageItem_Tild;
+
+class Track;
+
+struct TrackOptions;
+
+
+Result<std::shared_ptr<HeifPixelImage>>
+create_alpha_image_from_image_alpha_channel(const std::shared_ptr<HeifPixelImage>& image,
+                                            const heif_security_limits* limits);
 
 
 // This is a higher-level view than HeifFile.
@@ -67,17 +73,11 @@ public:
 
   int get_max_decoding_threads() const { return m_max_decoding_threads; }
 
-  // Sets the maximum size of both width and height of an image. The total limit
-  // of the image size (width * height) will be "maximum_size * maximum_size".
-  void set_maximum_image_size_limit(uint32_t maximum_size)
-  {
-    m_maximum_image_size_limit = uint64_t(maximum_size) * maximum_size;
-  }
+  void set_security_limits(const heif_security_limits* limits);
 
-  uint64_t get_maximum_image_size_limit() const
-  {
-    return m_maximum_image_size_limit;
-  }
+  [[nodiscard]] heif_security_limits* get_security_limits() { return &m_limits; }
+
+  [[nodiscard]] const heif_security_limits* get_security_limits() const { return &m_limits; }
 
   Error read(const std::shared_ptr<StreamReader>& reader);
 
@@ -85,33 +85,27 @@ public:
 
   Error read_from_memory(const void* data, size_t size, bool copy);
 
-  Error check_resolution(uint32_t width, uint32_t height) const;
-
   std::shared_ptr<HeifFile> get_heif_file() const { return m_heif_file; }
 
-  std::vector<std::shared_ptr<ImageItem>> get_top_level_images() { return m_top_level_images; }
 
-  void insert_new_image(heif_item_id id, std::shared_ptr<ImageItem> img) {
+  // === image items ===
+
+  std::vector<std::shared_ptr<ImageItem>> get_top_level_images(bool return_error_images);
+
+  void insert_image_item(heif_item_id id, const std::shared_ptr<ImageItem>& img) {
     m_all_images.insert(std::make_pair(id, img));
   }
 
-  std::shared_ptr<ImageItem> get_image(heif_item_id id)
+  std::shared_ptr<ImageItem> get_image(heif_item_id id, bool return_error_images);
+
+  std::shared_ptr<const ImageItem> get_image(heif_item_id id, bool return_error_images) const
   {
-    auto iter = m_all_images.find(id);
-    if (iter == m_all_images.end()) {
-      return nullptr;
-    }
-    else {
-      return iter->second;
-    }
+    return const_cast<HeifContext*>(this)->get_image(id, return_error_images);
   }
 
-  std::shared_ptr<const ImageItem> get_image(heif_item_id id) const
-  {
-    return const_cast<HeifContext*>(this)->get_image(id);
-  }
+  std::shared_ptr<ImageItem> get_primary_image(bool return_error_image);
 
-  std::shared_ptr<ImageItem> get_primary_image() { return m_primary_image; }
+  std::shared_ptr<const ImageItem> get_primary_image(bool return_error_image) const;
 
   bool is_image(heif_item_id ID) const;
 
@@ -120,46 +114,33 @@ public:
   Result<std::shared_ptr<HeifPixelImage>> decode_image(heif_item_id ID,
                                                        heif_colorspace out_colorspace,
                                                        heif_chroma out_chroma,
-                                                       const struct heif_decoding_options& options,
-                                                       bool decode_only_tile, uint32_t tx, uint32_t ty) const;
+                                                       const heif_decoding_options& options,
+                                                       bool decode_only_tile, uint32_t tx, uint32_t ty,
+                                                       std::set<heif_item_id> processed_ids) const;
+
+  Result<std::shared_ptr<HeifPixelImage>> convert_to_output_colorspace(std::shared_ptr<HeifPixelImage> img,
+                                                                       heif_colorspace out_colorspace,
+                                                                       heif_chroma out_chroma,
+                                                                       const heif_decoding_options& options) const;
+
+  Error get_id_of_non_virtual_child_image(heif_item_id in, heif_item_id& out) const;
 
   std::string debug_dump_boxes() const;
 
 
   // === writing ===
 
+  void write(StreamWriter& writer);
+
   // Create all boxes necessary for an empty HEIF file.
   // Note that this is no valid HEIF file, since some boxes (e.g. pitm) are generated, but
   // contain no valid data yet.
   void reset_to_empty_heif();
 
-  Error encode_image(const std::shared_ptr<HeifPixelImage>& image,
-                     struct heif_encoder* encoder,
-                     const struct heif_encoding_options& options,
-                     enum heif_image_input_class input_class,
-                     std::shared_ptr<ImageItem>& out_image);
-
-  Error encode_grid(const std::vector<std::shared_ptr<HeifPixelImage>>& tiles,
-                    uint16_t rows,
-                    uint16_t columns,
-                    struct heif_encoder* encoder,
-                    const struct heif_encoding_options& options,
-                    std::shared_ptr<ImageItem>& out_image);
-
-  Error add_grid_item(const std::vector<heif_item_id>& tile_ids,
-                      uint32_t output_width,
-                      uint32_t output_height,
-                      uint16_t tile_rows,
-                      uint16_t tile_columns,
-                      std::shared_ptr<ImageItem>& out_grid_image);
-
-  Result<std::shared_ptr<ImageItem_Overlay>> add_iovl_item(const ImageOverlay& overlayspec);
-
-  Result<std::shared_ptr<ImageItem_Tild>> add_tild_item(const heif_tild_image_parameters* parameters);
-
-  Error add_tild_image_tile(heif_item_id tild_id, uint32_t tile_x, uint32_t tile_y,
-                            const std::shared_ptr<HeifPixelImage>& image,
-                            struct heif_encoder* encoder);
+  Result<std::shared_ptr<ImageItem>> encode_image(const std::shared_ptr<HeifPixelImage>& image,
+                                                  heif_encoder* encoder,
+                                                  const heif_encoding_options& options,
+                                                  heif_image_input_class input_class);
 
   void set_primary_image(const std::shared_ptr<ImageItem>& image);
 
@@ -168,24 +149,25 @@ public:
   Error assign_thumbnail(const std::shared_ptr<ImageItem>& master_image,
                          const std::shared_ptr<ImageItem>& thumbnail_image);
 
-  Error encode_thumbnail(const std::shared_ptr<HeifPixelImage>& image,
-                         struct heif_encoder* encoder,
-                         const struct heif_encoding_options& options,
-                         int bbox_size,
-                         std::shared_ptr<ImageItem>& out_image_handle);
+  Result<std::shared_ptr<ImageItem>> encode_thumbnail(const std::shared_ptr<HeifPixelImage>& image,
+                                                      heif_encoder* encoder,
+                                                      const heif_encoding_options& options,
+                                                      int bbox_size);
 
   Error add_exif_metadata(const std::shared_ptr<ImageItem>& master_image, const void* data, int size);
 
   Error add_XMP_metadata(const std::shared_ptr<ImageItem>& master_image, const void* data, int size, heif_metadata_compression compression);
 
   Error add_generic_metadata(const std::shared_ptr<ImageItem>& master_image, const void* data, int size,
-                             const char* item_type, const char* content_type, const char* item_uri_type,
+                             uint32_t item_type, const char* content_type, const char* item_uri_type,
                              heif_metadata_compression compression, heif_item_id* out_item_id);
 
   heif_property_id add_property(heif_item_id targetItem, std::shared_ptr<Box> property, bool essential);
 
-  Result<heif_item_id> add_pyramid_group(uint16_t tile_size_x, uint16_t tile_size_y,
-                                         std::vector<heif_pyramid_layer_info> layers);
+  Result<heif_item_id> add_pyramid_group(const std::vector<heif_item_id>& layers);
+
+  Result<heif_property_id> add_text_property(heif_item_id, const std::string& language);
+
 
   // --- region items
 
@@ -208,9 +190,98 @@ public:
 
   void add_region_referenced_mask_ref(heif_item_id region_item_id, heif_item_id mask_item_id);
 
-  void write(StreamWriter& writer);
 
-  Error get_id_of_non_virtual_child_image(heif_item_id in, heif_item_id& out) const;
+  // === sequences ==
+
+  bool has_sequence() const { return !m_tracks.empty(); }
+
+  int get_number_of_tracks() const { return static_cast<int>(m_tracks.size()); }
+
+  std::vector<uint32_t> get_track_IDs() const;
+
+  // If 0 is passed as track_id, the main visual track is returned (we assume that there is only one visual track).
+  Result<std::shared_ptr<Track>> get_track(uint32_t track_id);
+
+  Result<std::shared_ptr<const Track>> get_track(uint32_t track_id) const;
+
+  uint32_t get_sequence_timescale() const;
+
+  uint64_t get_sequence_duration() const;
+
+  void set_sequence_timescale(uint32_t timescale);
+
+  void set_number_of_sequence_repetitions(uint32_t repetitions);
+
+  Result<std::shared_ptr<class Track_Visual>> add_visual_sequence_track(const TrackOptions*, uint32_t handler_type,
+                                                                        uint16_t width, uint16_t height);
+
+  Result<std::shared_ptr<class Track_Metadata>> add_uri_metadata_sequence_track(const TrackOptions*, std::string uri);
+
+  void add_text_item(std::shared_ptr<TextItem> text_item)
+  {
+    m_text_items.push_back(std::move(text_item));
+  }
+
+  std::shared_ptr<TextItem> add_text_item(const char* content_type, const char* text);
+
+  std::shared_ptr<TextItem> get_text_item(heif_item_id id) const
+  {
+    for (auto& item : m_text_items) {
+      if (item->get_item_id() == id)
+        return item;
+    }
+
+    return nullptr;
+  }
+
+  template<typename T>
+  Result<std::shared_ptr<T>> find_property(heif_item_id itemId, heif_property_id propertyId)
+  {
+    auto file = this->get_heif_file();
+
+    // For propertyId == 0, return the first property with this type.
+    if (propertyId == 0) {
+      return find_property<T>(itemId);
+    }
+
+    std::vector<std::shared_ptr<Box>> properties;
+    Error err = file->get_properties(itemId, properties);
+    if (err) {
+      return err;
+    }
+
+    if (propertyId - 1 >= properties.size()) {
+      Error(heif_error_Usage_error, heif_suberror_Invalid_property, "property index out of range");
+    }
+
+    auto box = properties[propertyId - 1];
+    auto box_casted = std::dynamic_pointer_cast<T>(box);
+    if (!box_casted) {
+      return Error(heif_error_Usage_error, heif_suberror_Invalid_property, "wrong property type");
+    }
+
+    return box_casted;
+  }
+
+  template<typename T>
+  Result<std::shared_ptr<T>> find_property(heif_item_id itemId) {
+    auto file = this->get_heif_file();
+    auto result = file->get_property_for_item<T>(itemId);
+    if (!result) {
+      return Error(heif_error_Invalid_input,
+                   heif_suberror_No_properties_assigned_to_item,
+                   "property not found on item");
+    }
+    return result;
+  }
+
+  template<typename T>
+  bool has_property(heif_item_id itemId) const
+  {
+    auto file = this->get_heif_file();
+    auto result = file->get_property_for_item<T>(itemId);
+    return result != nullptr;
+  }
 
 private:
   std::map<heif_item_id, std::shared_ptr<ImageItem>> m_all_images;
@@ -225,12 +296,23 @@ private:
 
   int m_max_decoding_threads = 4;
 
-  // Maximum image size in pixels (width * height).
-  uint64_t m_maximum_image_size_limit;
+  heif_security_limits m_limits;
+  TotalMemoryTracker m_memory_tracker;
 
   std::vector<std::shared_ptr<RegionItem>> m_region_items;
+  std::vector<std::shared_ptr<TextItem>> m_text_items;
+
+  // --- sequences
+
+  std::map<uint32_t, std::shared_ptr<Track>> m_tracks;
+  uint32_t m_visual_track_id = 0;
+  uint32_t m_sequence_repetitions = 1;
 
   Error interpret_heif_file();
+
+  Error interpret_heif_file_images();
+
+  Error interpret_heif_file_sequences();
 
   void remove_top_level_image(const std::shared_ptr<ImageItem>& image);
 };
